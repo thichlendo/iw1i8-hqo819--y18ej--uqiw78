@@ -16,6 +16,8 @@ export interface DownloadHistoryItem {
   sizeBytes: number;
   filename: string;
   originalUrl: string;
+  streamUrl?: string;
+  audioUrl?: string;
 }
 
 interface DownloadHistoryTableProps {
@@ -44,7 +46,7 @@ export const DownloadHistoryTable: React.FC<DownloadHistoryTableProps> = ({
       return (
         <span className="inline-flex items-center gap-1.5 text-amber-400 font-medium">
           <VolumeX className="h-3.5 w-3.5" />
-          <span>Không tiếng (Muted)</span>
+          <span>Không tiếng (Muted -an)</span>
         </span>
       );
     }
@@ -65,10 +67,10 @@ export const DownloadHistoryTable: React.FC<DownloadHistoryTableProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 id="history-heading" className="text-2xl font-bold tracking-tight text-white">
-            03. Lịch sử & Hàng đợi Tải xuống ({items.length})
+            03. Lịch sử Tải xuống thực tế ({items.length})
           </h2>
           <p className="mt-1 text-sm text-slate-400">
-            Theo dõi các tệp video đã trích xuất kèm thông số độ phân giải, trạng thái âm thanh (Có tiếng / Không tiếng) và dung lượng thực tế.
+            Chỉ lưu các video thực tế bạn đã phân tích và tải về trên trình duyệt của bạn (không có dữ liệu mẫu giả).
           </p>
         </div>
 
@@ -87,10 +89,10 @@ export const DownloadHistoryTable: React.FC<DownloadHistoryTableProps> = ({
       {items.length === 0 ? (
         <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900/40 p-8 text-center">
           <p className="text-sm font-medium text-slate-300">
-            Chưa có video nào trong danh sách đã tải xuống phiên này.
+            Chưa có video nào được tải xuống.
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            Chọn chất lượng video và chế độ âm thanh (Có tiếng hoặc Không tiếng) ở bảng điều khiển phía trên rồi nhấn "Tải xuống ngay".
+            Dán đường dẫn video mạng xã hội vào ô phía trên, nhấn "Phân tích & Tìm Video", chọn chất lượng và chế độ âm thanh rồi nhấn "Tải xuống ngay".
           </p>
         </div>
       ) : (
@@ -134,7 +136,7 @@ export const DownloadHistoryTable: React.FC<DownloadHistoryTableProps> = ({
                   <td className="px-3 py-3 whitespace-nowrap">
                     <span className="inline-flex items-center gap-1 text-emerald-400 font-medium">
                       <CheckCircle2 className="h-3.5 w-3.5" />
-                      <span>Đã hoàn tất ({item.timestamp})</span>
+                      <span>Đã tải ({item.timestamp})</span>
                     </span>
                   </td>
                   <td className="py-3 pl-3 pr-4 text-right whitespace-nowrap">
@@ -153,7 +155,7 @@ export const DownloadHistoryTable: React.FC<DownloadHistoryTableProps> = ({
                         className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-500 whitespace-nowrap shrink-0"
                       >
                         <Download className="h-3 w-3" />
-                        <span>Lưu tệp</span>
+                        <span>Tải lại tệp</span>
                       </button>
                     </div>
                   </td>
