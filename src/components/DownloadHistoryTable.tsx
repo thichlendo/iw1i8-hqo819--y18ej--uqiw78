@@ -1,5 +1,14 @@
 import React from 'react';
-import {Download, Trash2, Volume2, VolumeX, Music, CheckCircle2, RotateCcw} from 'lucide-react';
+import {
+  Download,
+  Trash2,
+  Volume2,
+  VolumeX,
+  Music,
+  Image as ImageIcon,
+  CheckCircle2,
+  RotateCcw,
+} from 'lucide-react';
 import {formatBytes, type PlatformId, type QualityId, type AudioMode} from '../lib/socialDetector';
 import {PlatformIcon} from './PlatformIcon';
 
@@ -18,6 +27,7 @@ export interface DownloadHistoryItem {
   originalUrl: string;
   streamUrl?: string;
   audioUrl?: string;
+  imageUrl?: string;
 }
 
 interface DownloadHistoryTableProps {
@@ -50,6 +60,14 @@ export const DownloadHistoryTable: React.FC<DownloadHistoryTableProps> = ({
         </span>
       );
     }
+    if (mode === 'image_only') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-pink-400 font-medium">
+          <ImageIcon className="h-3.5 w-3.5" />
+          <span>Ảnh gốc độ phân giải cao (JPG)</span>
+        </span>
+      );
+    }
     return (
       <span className="inline-flex items-center gap-1.5 text-blue-400 font-medium">
         <Music className="h-3.5 w-3.5" />
@@ -70,7 +88,7 @@ export const DownloadHistoryTable: React.FC<DownloadHistoryTableProps> = ({
             03. Lịch sử Tải xuống thực tế ({items.length})
           </h2>
           <p className="mt-1 text-sm text-slate-400">
-            Chỉ lưu các video thực tế bạn đã phân tích và tải về trên trình duyệt của bạn (không có dữ liệu mẫu giả).
+            Chỉ lưu các video và hình ảnh thực tế bạn đã phân tích và tải về trên trình duyệt của bạn (không có dữ liệu mẫu giả).
           </p>
         </div>
 
@@ -89,10 +107,10 @@ export const DownloadHistoryTable: React.FC<DownloadHistoryTableProps> = ({
       {items.length === 0 ? (
         <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900/40 p-8 text-center">
           <p className="text-sm font-medium text-slate-300">
-            Chưa có video nào được tải xuống.
+            Chưa có video hoặc hình ảnh nào được tải xuống.
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            Dán đường dẫn video mạng xã hội vào ô phía trên, nhấn "Phân tích & Tìm Video", chọn chất lượng và chế độ âm thanh rồi nhấn "Tải xuống ngay".
+            Dán đường dẫn video hoặc bài đăng ảnh mạng xã hội (Facebook, Instagram, Threads, TikTok, YouTube, X...) vào ô phía trên, nhấn "Phân tích & Tìm Video/Ảnh", chọn chế độ rồi nhấn "Tải xuống ngay".
           </p>
         </div>
       ) : (
@@ -101,9 +119,9 @@ export const DownloadHistoryTable: React.FC<DownloadHistoryTableProps> = ({
             <thead>
               <tr className="border-b border-slate-800 bg-slate-900/90 text-xs font-semibold text-slate-400">
                 <th className="py-3 pl-4 pr-3">Mạng xã hội</th>
-                <th className="px-3 py-3">Video & Tác giả</th>
-                <th className="px-3 py-3">Chất lượng</th>
-                <th className="px-3 py-3">Chế độ âm thanh</th>
+                <th className="px-3 py-3">Nội dung & Tác giả</th>
+                <th className="px-3 py-3">Định dạng</th>
+                <th className="px-3 py-3">Chế độ xuất</th>
                 <th className="px-3 py-3 text-right">Dung lượng</th>
                 <th className="px-3 py-3">Trạng thái</th>
                 <th className="py-3 pl-3 pr-4 text-right">Thao tác</th>
@@ -125,7 +143,11 @@ export const DownloadHistoryTable: React.FC<DownloadHistoryTableProps> = ({
                     </div>
                   </td>
                   <td className="px-3 py-3 font-mono font-semibold text-slate-200 whitespace-nowrap tabular-nums">
-                    {item.audioMode === 'audio_only' ? '320kbps MP3' : `${item.qualityId} MP4`}
+                    {item.audioMode === 'audio_only'
+                      ? '320kbps MP3'
+                      : item.audioMode === 'image_only'
+                        ? 'Original JPG'
+                        : `${item.qualityId} MP4`}
                   </td>
                   <td className="px-3 py-3 whitespace-nowrap">
                     {renderAudioLabel(item.audioMode)}

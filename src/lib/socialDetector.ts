@@ -16,7 +16,7 @@ export type PlatformId =
 
 export type QualityId = '2160p' | '1440p' | '1080p' | '720p' | '480p' | '360p';
 
-export type AudioMode = 'with_audio' | 'muted_video' | 'audio_only';
+export type AudioMode = 'with_audio' | 'muted_video' | 'audio_only' | 'image_only';
 
 export interface PlatformInfo {
   id: PlatformId;
@@ -35,12 +35,23 @@ export interface DetectionResult {
   isUrl: boolean;
   platform: PlatformInfo | null;
   videoId: string | null;
-  contentType: 'Video' | 'Shorts' | 'Reel' | 'Story' | 'Clip' | 'Track' | 'Pin' | 'Post' | 'Search';
+  contentType:
+    | 'Video'
+    | 'Shorts'
+    | 'Reel'
+    | 'Story'
+    | 'Photo'
+    | 'Clip'
+    | 'Track'
+    | 'Pin'
+    | 'Post'
+    | 'Search';
   normalizedUrl: string;
   creatorHint: string | null;
   confidenceMs: number;
   directPlatformUrl: string | null;
   platformSearchUrl: string | null;
+  isMetaPlatform?: boolean;
 }
 
 export interface QualityOption {
@@ -54,6 +65,15 @@ export interface QualityOption {
   noWatermark: boolean;
   directStreamUrl?: string;
   realSizeBytes?: number;
+}
+
+export interface ExtractedImageItem {
+  id: string;
+  url: string;
+  label: string;
+  width?: number;
+  height?: number;
+  format: 'JPG' | 'PNG' | 'WEBP';
 }
 
 export interface ResolvedVideo {
@@ -83,15 +103,22 @@ export interface ResolvedVideo {
   hdStreamUrl?: string;
   wmStreamUrl?: string;
   audioStreamUrl?: string;
+  images: ExtractedImageItem[];
   qualities: QualityOption[];
-  resolvedVia: 'real-stream-api' | 'yt-dlp-live' | 'oembed-live' | 'url-inspector';
+  resolveTimeMs?: number;
+  resolvedVia:
+    | 'meta-fast-engine'
+    | 'real-stream-api'
+    | 'yt-dlp-live'
+    | 'oembed-live'
+    | 'url-inspector';
 }
 
 export interface LiveSearchVideoItem {
   id: string;
   videoId: string;
   platformId: PlatformId;
-  contentType: 'Video' | 'Shorts' | 'Reel' | 'Clip' | 'Track' | 'Pin' | 'Post';
+  contentType: 'Video' | 'Shorts' | 'Reel' | 'Photo' | 'Clip' | 'Track' | 'Pin' | 'Post';
   title: string;
   authorName: string;
   authorHandle: string;
@@ -116,7 +143,13 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     supportsNoWatermark: true,
     maxResolution: '1080p',
     searchUrlTemplate: 'https://www.tiktok.com/search/video?q={query}',
-    supportedFormats: ['MP4 Không Logo', 'MP4 Có Tiếng', 'MP4 Tắt Tiếng (-an)', 'MP3 Nhạc Nền'],
+    supportedFormats: [
+      'MP4 Không Logo',
+      'MP4 Có Tiếng',
+      'MP4 Tắt Tiếng (-an)',
+      'Ảnh Slideshow Gốc',
+      'MP3 Nhạc Nền',
+    ],
   },
   youtube: {
     id: 'youtube',
@@ -127,29 +160,64 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     supportsNoWatermark: true,
     maxResolution: '2160p',
     searchUrlTemplate: 'https://www.youtube.com/results?search_query={query}',
-    supportedFormats: ['4K 2160p60', '1440p60', '1080p60', 'MP4 Tắt Tiếng (-an)', 'MP3 320kbps'],
+    supportedFormats: [
+      '4K 2160p60',
+      '1440p60',
+      '1080p60',
+      'MP4 Tắt Tiếng (-an)',
+      'Ảnh Bìa MaxRes JPG',
+      'MP3 320kbps',
+    ],
   },
   instagram: {
     id: 'instagram',
-    name: 'Instagram',
+    name: 'Instagram (Meta)',
     shortName: 'IG',
     domain: 'instagram.com',
     accentHex: '#EC4899',
     supportsNoWatermark: true,
     maxResolution: '1080p',
     searchUrlTemplate: 'https://www.instagram.com/explore/search/keyword/?q={query}',
-    supportedFormats: ['Reels 1080p', 'Story MP4', 'MP4 Không Tiếng (-an)', 'AAC/MP3 Audio'],
+    supportedFormats: [
+      'Reels 1080p',
+      'Ảnh Carousel / Post JPG',
+      'Story MP4/JPG',
+      'MP4 Không Tiếng (-an)',
+      'AAC/MP3 Audio',
+    ],
   },
   facebook: {
     id: 'facebook',
-    name: 'Facebook',
+    name: 'Facebook (Meta)',
     shortName: 'FB',
     domain: 'facebook.com',
     accentHex: '#3B82F6',
     supportsNoWatermark: true,
     maxResolution: '1080p',
     searchUrlTemplate: 'https://www.facebook.com/watch/search/?q={query}',
-    supportedFormats: ['FB Watch 1080p', 'FB Reels HD', 'SD 480p', 'MP4 Tắt Tiếng (-an)'],
+    supportedFormats: [
+      'FB Watch 1080p',
+      'FB Reels HD',
+      'Ảnh FB / Album Gốc JPG',
+      'MP4 Tắt Tiếng (-an)',
+      'MP3 Audio',
+    ],
+  },
+  threads: {
+    id: 'threads',
+    name: 'Threads (Meta)',
+    shortName: 'TH',
+    domain: 'threads.net',
+    accentHex: '#CBD5E1',
+    supportsNoWatermark: true,
+    maxResolution: '1080p',
+    searchUrlTemplate: 'https://www.threads.net/search?q={query}',
+    supportedFormats: [
+      'Threads MP4 1080p',
+      'Ảnh Threads Gốc JPG',
+      'MP4 Tắt Tiếng (-an)',
+      'MP3 Audio',
+    ],
   },
   twitter: {
     id: 'twitter',
@@ -160,7 +228,7 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     supportsNoWatermark: true,
     maxResolution: '1080p',
     searchUrlTemplate: 'https://x.com/search?q={query}&f=video',
-    supportedFormats: ['MP4 1080p', 'MP4 720p', 'MP4 Không Tiếng (-an)', 'MP3 Audio'],
+    supportedFormats: ['MP4 1080p', 'Ảnh Tweet 4K JPG', 'MP4 Không Tiếng (-an)', 'MP3 Audio'],
   },
   douyin: {
     id: 'douyin',
@@ -171,18 +239,7 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     supportsNoWatermark: true,
     maxResolution: '1080p',
     searchUrlTemplate: 'https://www.douyin.com/search/{query}?type=video',
-    supportedFormats: ['Douyin Gốc Không Logo', '1080p60', 'MP4 Không Tiếng (-an)', 'MP3 Original'],
-  },
-  threads: {
-    id: 'threads',
-    name: 'Threads',
-    shortName: 'TH',
-    domain: 'threads.net',
-    accentHex: '#CBD5E1',
-    supportsNoWatermark: true,
-    maxResolution: '1080p',
-    searchUrlTemplate: 'https://www.threads.net/search?q={query}',
-    supportedFormats: ['Threads MP4 1080p', 'MP4 Tắt Tiếng (-an)', 'MP3 Audio'],
+    supportedFormats: ['Douyin Gốc Không Logo', 'Ảnh Album Douyin', 'MP4 Không Tiếng (-an)', 'MP3'],
   },
   reddit: {
     id: 'reddit',
@@ -193,7 +250,12 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     supportsNoWatermark: true,
     maxResolution: '1080p',
     searchUrlTemplate: 'https://www.reddit.com/search/?q={query}&type=media',
-    supportedFormats: ['DASH Muxed Audio+Video', 'Video Không Tiếng (-an)', 'Audio MP3'],
+    supportedFormats: [
+      'DASH Muxed Audio+Video',
+      'Ảnh Reddit Gallery JPG',
+      'Video Không Tiếng (-an)',
+      'Audio MP3',
+    ],
   },
   vimeo: {
     id: 'vimeo',
@@ -204,7 +266,7 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     supportsNoWatermark: true,
     maxResolution: '2160p',
     searchUrlTemplate: 'https://vimeo.com/search?q={query}',
-    supportedFormats: ['4K MP4', '1080p Master', 'MP4 Tắt Tiếng (-an)', 'MP3'],
+    supportedFormats: ['4K MP4', '1080p Master', 'Ảnh Thumbnail HD', 'MP4 Tắt Tiếng (-an)'],
   },
   bilibili: {
     id: 'bilibili',
@@ -215,7 +277,7 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     supportsNoWatermark: true,
     maxResolution: '2160p',
     searchUrlTemplate: 'https://search.bilibili.com/all?keyword={query}',
-    supportedFormats: ['4K UHD', '1080p60 High Bitrate', 'MP4 Tắt Tiếng (-an)', 'MP3'],
+    supportedFormats: ['4K UHD', '1080p60 High Bitrate', 'Ảnh Bìa Gốc JPG', 'MP4 Tắt Tiếng (-an)'],
   },
   pinterest: {
     id: 'pinterest',
@@ -225,8 +287,8 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     accentHex: '#F43F5E',
     supportsNoWatermark: true,
     maxResolution: '1080p',
-    searchUrlTemplate: 'https://www.pinterest.com/search/videos/?q={query}',
-    supportedFormats: ['Video Pin 1080p', 'Pin Loop Không Tiếng (-an)', 'MP3'],
+    searchUrlTemplate: 'https://www.pinterest.com/search/pins/?q={query}',
+    supportedFormats: ['Video Pin 1080p', 'Ảnh Pin Gốc Độ Phân Giải Cao', 'Pin Không Tiếng (-an)'],
   },
   soundcloud: {
     id: 'soundcloud',
@@ -237,7 +299,7 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     supportsNoWatermark: true,
     maxResolution: '720p',
     searchUrlTemplate: 'https://soundcloud.com/search?q={query}',
-    supportedFormats: ['MP3 320kbps', 'M4A Original', 'Visualizer MP4'],
+    supportedFormats: ['MP3 320kbps', 'Ảnh Artwork Gốc JPG', 'M4A Original'],
   },
   twitch: {
     id: 'twitch',
@@ -259,7 +321,7 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     supportsNoWatermark: true,
     maxResolution: '1080p',
     searchUrlTemplate: 'https://www.dailymotion.com/search/{query}/videos',
-    supportedFormats: ['1080p Full HD', '720p HD', 'MP4 Không Tiếng (-an)', 'MP3'],
+    supportedFormats: ['1080p Full HD', '720p HD', 'Ảnh Bìa HD JPG', 'MP4 Không Tiếng (-an)'],
   },
 };
 
@@ -334,9 +396,33 @@ export function buildPlatformSearchUrl(platformId: PlatformId, query: string): s
   return platform.searchUrlTemplate.replace('{query}', cleanQuery);
 }
 
+function cleanTrackingParams(u: URL): URL {
+  const copy = new URL(u.toString());
+  const junkParams = [
+    'fbclid',
+    'igshid',
+    'igsh',
+    'mibextid',
+    'rdid',
+    'share_url',
+    'utm_source',
+    'utm_medium',
+    'utm_campaign',
+    '_r',
+    '_t',
+    'is_from_webapp',
+    'sender_device',
+  ];
+  for (const key of junkParams) {
+    copy.searchParams.delete(key);
+  }
+  return copy;
+}
+
 /**
- * Pure, deterministic <1ms detector that identifies which social network a URL or shorthand belongs to,
- * extracts the exact video ID, content type (Video, Reel, Shorts, Clip, etc.), creator handle, and canonical link.
+ * Pure, deterministic <0.2ms detector that identifies which social network a URL or shorthand belongs to,
+ * with specialized deep support for Meta ecosystems (Facebook Watch, Reels, Share/v/r/p, Photos, Stories,
+ * Instagram Reels/Posts/Carousels/Stories/Share, Threads net/com) and all 14+ platforms.
  */
 export function detectSocialPlatform(rawInput: string): DetectionResult {
   const trimmed = rawInput.trim();
@@ -349,7 +435,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       contentType: 'Search',
       normalizedUrl: '',
       creatorHint: null,
-      confidenceMs: 0.1,
+      confidenceMs: 0.05,
       directPlatformUrl: null,
       platformSearchUrl: null,
     };
@@ -370,41 +456,247 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
     parsedUrl = null;
   }
 
+  // Unwrap Facebook / Instagram link shim (l.facebook.com/l.php?u=... or l.instagram.com/?u=...)
   if (parsedUrl) {
-    const host = parsedUrl.hostname.toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
-    const path = parsedUrl.pathname;
+    const rawHost = parsedUrl.hostname.toLowerCase();
+    if (
+      (rawHost === 'l.facebook.com' ||
+        rawHost === 'lm.facebook.com' ||
+        rawHost === 'l.instagram.com') &&
+      parsedUrl.searchParams.get('u')
+    ) {
+      try {
+        parsedUrl = new URL(parsedUrl.searchParams.get('u')!);
+      } catch {
+        // Keep original if inner u param is malformed
+      }
+    }
+  }
 
-    // 1. TikTok
+  if (parsedUrl) {
+    const cleanedUrl = cleanTrackingParams(parsedUrl);
+    const host = cleanedUrl.hostname
+      .toLowerCase()
+      .replace(/^(www|m|web|mbasic|touch|business)\./, '');
+    const path = cleanedUrl.pathname;
+
+    // 1. Facebook (Meta) — Watch, Reels, Videos, Photos, Share links (/share/v, /share/r, /share/p), Stories, fb.watch
+    if (
+      host === 'facebook.com' ||
+      host.endsWith('.facebook.com') ||
+      host === 'fb.watch' ||
+      host === 'fb.com' ||
+      host === 'fb.gg'
+    ) {
+      const reelMatch =
+        path.match(/\/reel\/(\d+)/i) ||
+        path.match(/\/reels\/(\d+)/i) ||
+        path.match(/\/share\/r\/([A-Za-z0-9_-]+)/i);
+      const videoMatch =
+        path.match(/\/([^/]+)\/videos\/(?:[^/]+\/)?(\d+)/i) ||
+        path.match(/\/videos\/(\d+)/i) ||
+        path.match(/\/share\/v\/([A-Za-z0-9_-]+)/i) ||
+        path.match(/\/watch\/live\/?/i);
+      const photoMatch =
+        path.match(/\/photo(?:\.php|\/)?/i) ||
+        path.match(/\/([^/]+)\/photos\/(?:[^/]+\/)?(\d+)/i) ||
+        path.match(/\/share\/p\/([A-Za-z0-9_-]+)/i);
+      const postMatch =
+        path.match(/\/([^/]+)\/posts\/([A-Za-z0-9_-]+)/i) ||
+        path.match(/\/story\.php/i) ||
+        path.match(/\/permalink\.php/i) ||
+        path.match(/\/share\/([A-Za-z0-9_-]+)/i);
+      const storyMatch = path.match(/\/stories\/([^/]+)\/(\d+)/i);
+
+      const queryV = cleanedUrl.searchParams.get('v');
+      const queryFbid =
+        cleanedUrl.searchParams.get('fbid') || cleanedUrl.searchParams.get('story_fbid');
+      const shortMatch =
+        host === 'fb.watch' || host === 'fb.com' ? path.match(/^\/([A-Za-z0-9_-]+)/) : null;
+
+      let contentType: DetectionResult['contentType'] = 'Video';
+      if (reelMatch) {
+        contentType = 'Reel';
+      } else if (storyMatch) {
+        contentType = 'Story';
+      } else if (photoMatch || (queryFbid && !queryV && !videoMatch)) {
+        contentType = 'Photo';
+      } else if (postMatch && !queryV && !videoMatch) {
+        contentType = 'Post';
+      }
+
+      let creatorHint: string | null = null;
+      const userVideoMatch = path.match(/^\/([^/]+)\/(?:videos|posts|photos)\//i);
+      if (
+        userVideoMatch &&
+        !['watch', 'reel', 'reels', 'share', 'photo', 'groups', 'events', 'gaming'].includes(
+          userVideoMatch[1].toLowerCase(),
+        )
+      ) {
+        creatorHint = `@${userVideoMatch[1]}`;
+      }
+
+      const videoId =
+        (reelMatch && reelMatch[1]) ||
+        queryV ||
+        queryFbid ||
+        (videoMatch && (videoMatch[2] || videoMatch[1])) ||
+        (photoMatch && (photoMatch[2] || photoMatch[1])) ||
+        (postMatch && (postMatch[2] || postMatch[1])) ||
+        (storyMatch && storyMatch[2]) ||
+        (shortMatch && shortMatch[1]) ||
+        'fb-media';
+
+      const canonical = cleanedUrl.toString();
+      return {
+        detected: true,
+        isUrl: true,
+        platform: PLATFORMS.facebook,
+        videoId,
+        contentType,
+        normalizedUrl: canonical,
+        creatorHint,
+        confidenceMs: 0.08,
+        directPlatformUrl: canonical,
+        platformSearchUrl: buildPlatformSearchUrl('facebook', videoId),
+        isMetaPlatform: true,
+      };
+    }
+
+    // 2. Instagram (Meta) — Reels, Posts, Carousels, Stories, Share links, IGTV
+    if (
+      host === 'instagram.com' ||
+      host.endsWith('.instagram.com') ||
+      host === 'instagr.am' ||
+      host === 'ig.me'
+    ) {
+      const userScopedMatch = path.match(/^\/([^/]+)\/(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
+      const directMatch = path.match(/^\/(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
+      const shareMatch = path.match(/^\/share\/(?:(reel|reels|p)\/)?([A-Za-z0-9_-]+)/i);
+      const storyMatch = path.match(/^\/stories\/([^/]+)\/(\d+)/i);
+
+      let contentType: DetectionResult['contentType'] = 'Reel';
+      let videoId = 'ig-media';
+      let creatorHint: string | null = null;
+
+      if (userScopedMatch) {
+        creatorHint = `@${userScopedMatch[1]}`;
+        const kind = userScopedMatch[2].toLowerCase();
+        contentType =
+          kind === 'p'
+            ? cleanedUrl.searchParams.has('img_index')
+              ? 'Photo'
+              : 'Post'
+            : 'Reel';
+        videoId = userScopedMatch[3];
+      } else if (directMatch) {
+        const kind = directMatch[1].toLowerCase();
+        contentType =
+          kind === 'p'
+            ? cleanedUrl.searchParams.has('img_index')
+              ? 'Photo'
+              : 'Post'
+            : 'Reel';
+        videoId = directMatch[2];
+      } else if (shareMatch) {
+        const kind = (shareMatch[1] || 'reel').toLowerCase();
+        contentType = kind === 'p' ? 'Post' : 'Reel';
+        videoId = shareMatch[2];
+      } else if (storyMatch) {
+        contentType = 'Story';
+        creatorHint = `@${storyMatch[1]}`;
+        videoId = storyMatch[2];
+      }
+
+      const canonical =
+        (userScopedMatch || directMatch) && videoId !== 'ig-media'
+          ? `https://www.instagram.com/${contentType === 'Reel' ? 'reel' : 'p'}/${videoId}/`
+          : cleanedUrl.toString();
+
+      return {
+        detected: true,
+        isUrl: true,
+        platform: PLATFORMS.instagram,
+        videoId,
+        contentType,
+        normalizedUrl: canonical,
+        creatorHint,
+        confidenceMs: 0.08,
+        directPlatformUrl: canonical,
+        platformSearchUrl: buildPlatformSearchUrl('instagram', videoId),
+        isMetaPlatform: true,
+      };
+    }
+
+    // 3. Threads (Meta) — threads.net & threads.com
+    if (
+      host === 'threads.net' ||
+      host.endsWith('.threads.net') ||
+      host === 'threads.com' ||
+      host.endsWith('.threads.com')
+    ) {
+      const postMatch =
+        path.match(/\/@([^/]+)\/post\/([A-Za-z0-9_-]+)/i) ||
+        path.match(/\/([^/]+)\/post\/([A-Za-z0-9_-]+)/i) ||
+        path.match(/\/t\/([A-Za-z0-9_-]+)/i);
+      const creatorHint =
+        postMatch && postMatch[2] ? `@${postMatch[1].replace(/^@/, '')}` : null;
+      const videoId = postMatch ? postMatch[2] || postMatch[1] : 'threads-post';
+      const canonical = cleanedUrl.toString();
+
+      return {
+        detected: true,
+        isUrl: true,
+        platform: PLATFORMS.threads,
+        videoId,
+        contentType: 'Post',
+        normalizedUrl: canonical,
+        creatorHint,
+        confidenceMs: 0.08,
+        directPlatformUrl: canonical,
+        platformSearchUrl: buildPlatformSearchUrl('threads', videoId),
+        isMetaPlatform: true,
+      };
+    }
+
+    // 4. TikTok (including /video/ and /photo/ slideshows)
     if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
-      const videoMatch = path.match(/\/@([^/]+)\/video\/(\d+)/i) || path.match(/\/v\/(\d+)/i);
-      const shortMatch = path.match(/^\/([A-Za-z0-9_-]{6,16})\/?$/);
+      const mediaMatch =
+        path.match(/\/@([^/]+)\/(video|photo)\/(\d+)/i) ||
+        path.match(/\/(v|video|photo)\/(\d+)/i);
+      const shortMatch = path.match(/^\/(?:t\/)?([A-Za-z0-9_-]{6,16})\/?$/);
       const creatorMatch = path.match(/\/@([^/]+)/);
-      const videoId = videoMatch
-        ? videoMatch[2] || videoMatch[1]
+      const isPhotoMode =
+        (mediaMatch &&
+          (mediaMatch[2]?.toLowerCase() === 'photo' ||
+            mediaMatch[1]?.toLowerCase() === 'photo')) ||
+        path.includes('/photo/');
+      const videoId = mediaMatch
+        ? mediaMatch[3] || mediaMatch[2]
         : shortMatch
           ? shortMatch[1]
-          : parsedUrl.searchParams.get('item_id') || 'tiktok-video';
+          : cleanedUrl.searchParams.get('item_id') || 'tiktok-media';
       const creatorHint = creatorMatch ? `@${creatorMatch[1]}` : null;
       const canonical =
-        videoMatch && creatorMatch
-          ? `https://www.tiktok.com/@${creatorMatch[1]}/video/${videoId}`
-          : parsedUrl.toString();
+        mediaMatch && creatorMatch
+          ? `https://www.tiktok.com/@${creatorMatch[1]}/${isPhotoMode ? 'photo' : 'video'}/${videoId}`
+          : cleanedUrl.toString();
 
       return {
         detected: true,
         isUrl: true,
         platform: PLATFORMS.tiktok,
         videoId,
-        contentType: 'Video',
+        contentType: isPhotoMode ? 'Photo' : 'Video',
         normalizedUrl: canonical,
         creatorHint,
-        confidenceMs: 0.2,
+        confidenceMs: 0.1,
         directPlatformUrl: canonical,
         platformSearchUrl: buildPlatformSearchUrl('tiktok', videoId),
       };
     }
 
-    // 2. YouTube & Shorts & youtu.be
+    // 5. YouTube & Shorts & youtu.be
     if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') {
       let videoId: string | null = null;
       let contentType: DetectionResult['contentType'] = 'Video';
@@ -421,7 +713,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
         videoId = m ? m[1] : null;
         contentType = 'Clip';
       } else {
-        videoId = parsedUrl.searchParams.get('v');
+        videoId = cleanedUrl.searchParams.get('v');
       }
 
       const finalId = videoId || 'youtube-video';
@@ -438,149 +730,64 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
         contentType,
         normalizedUrl: canonical,
         creatorHint: null,
-        confidenceMs: 0.15,
+        confidenceMs: 0.1,
         directPlatformUrl: canonical,
         platformSearchUrl: buildPlatformSearchUrl('youtube', finalId),
       };
     }
 
-    // 3. Instagram (Reels, Posts, Stories, TV)
-    if (host === 'instagram.com' || host.endsWith('.instagram.com') || host === 'instagr.am') {
-      const reelMatch = path.match(/\/(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
-      const storyMatch = path.match(/\/stories\/([^/]+)\/(\d+)/i);
-      let contentType: DetectionResult['contentType'] = 'Reel';
-      let videoId = 'ig-video';
-      let creatorHint: string | null = null;
-
-      if (reelMatch) {
-        const kind = reelMatch[1].toLowerCase();
-        contentType = kind === 'p' ? 'Post' : 'Reel';
-        videoId = reelMatch[2];
-      } else if (storyMatch) {
-        contentType = 'Story';
-        creatorHint = `@${storyMatch[1]}`;
-        videoId = storyMatch[2];
-      }
-
-      const canonical = parsedUrl.toString();
-      return {
-        detected: true,
-        isUrl: true,
-        platform: PLATFORMS.instagram,
-        videoId,
-        contentType,
-        normalizedUrl: canonical,
-        creatorHint,
-        confidenceMs: 0.2,
-        directPlatformUrl: canonical,
-        platformSearchUrl: buildPlatformSearchUrl('instagram', videoId),
-      };
-    }
-
-    // 4. Facebook (Watch, Reels, Videos, fb.watch, share/v, share/r)
-    if (
-      host === 'facebook.com' ||
-      host.endsWith('.facebook.com') ||
-      host === 'fb.watch' ||
-      host === 'fb.com'
-    ) {
-      const reelMatch = path.match(/\/reel\/(\d+)/i) || path.match(/\/share\/r\/([A-Za-z0-9_-]+)/i);
-      const videoMatch =
-        path.match(/\/videos\/(\d+)/i) || path.match(/\/share\/v\/([A-Za-z0-9_-]+)/i);
-      const queryV = parsedUrl.searchParams.get('v');
-      const shortMatch = host === 'fb.watch' ? path.match(/^\/([A-Za-z0-9_-]+)/) : null;
-
-      const contentType: DetectionResult['contentType'] = reelMatch ? 'Reel' : 'Video';
-      const videoId =
-        (reelMatch && reelMatch[1]) ||
-        queryV ||
-        (videoMatch && videoMatch[1]) ||
-        (shortMatch && shortMatch[1]) ||
-        'fb-video';
-
-      const canonical = parsedUrl.toString();
-      return {
-        detected: true,
-        isUrl: true,
-        platform: PLATFORMS.facebook,
-        videoId,
-        contentType,
-        normalizedUrl: canonical,
-        creatorHint: null,
-        confidenceMs: 0.22,
-        directPlatformUrl: canonical,
-        platformSearchUrl: buildPlatformSearchUrl('facebook', videoId),
-      };
-    }
-
-    // 5. X / Twitter
+    // 6. X / Twitter (videos & photos)
     if (
       host === 'x.com' ||
       host === 'twitter.com' ||
       host.endsWith('.twitter.com') ||
-      host === 't.co'
+      host === 't.co' ||
+      host === 'fxtwitter.com' ||
+      host === 'vxtwitter.com'
     ) {
       const statusMatch = path.match(/\/([^/]+)\/status\/(\d+)/i);
+      const isPhotoUrl = /\/photo\/\d+/i.test(path);
       const creatorHint = statusMatch ? `@${statusMatch[1]}` : null;
-      const videoId = statusMatch ? statusMatch[2] : path.replace(/\//g, '') || 'x-video';
+      const videoId = statusMatch ? statusMatch[2] : path.replace(/\//g, '') || 'x-media';
       const canonical = statusMatch
         ? `https://x.com/${statusMatch[1]}/status/${videoId}`
-        : parsedUrl.toString();
+        : cleanedUrl.toString();
 
       return {
         detected: true,
         isUrl: true,
         platform: PLATFORMS.twitter,
         videoId,
-        contentType: 'Video',
+        contentType: isPhotoUrl ? 'Photo' : 'Video',
         normalizedUrl: canonical,
         creatorHint,
-        confidenceMs: 0.18,
+        confidenceMs: 0.12,
         directPlatformUrl: canonical,
         platformSearchUrl: buildPlatformSearchUrl('twitter', videoId),
       };
     }
 
-    // 6. Douyin
-    if (host === 'douyin.com' || host.endsWith('.douyin.com')) {
-      const videoMatch = path.match(/\/video\/(\d+)/i) || path.match(/^\/([A-Za-z0-9_-]+)\/?$/);
-      const modalId = parsedUrl.searchParams.get('modal_id');
-      const videoId = modalId || (videoMatch ? videoMatch[1] : 'douyin-video');
-      const canonical = parsedUrl.toString();
+    // 7. Douyin
+    if (host === 'douyin.com' || host.endsWith('.douyin.com') || host === 'iesdouyin.com') {
+      const videoMatch =
+        path.match(/\/(video|note)\/(\d+)/i) || path.match(/^\/([A-Za-z0-9_-]+)\/?$/);
+      const modalId = cleanedUrl.searchParams.get('modal_id');
+      const isNote = path.includes('/note/');
+      const videoId =
+        modalId || (videoMatch ? videoMatch[2] || videoMatch[1] : 'douyin-media');
+      const canonical = cleanedUrl.toString();
 
       return {
         detected: true,
         isUrl: true,
         platform: PLATFORMS.douyin,
         videoId,
-        contentType: 'Video',
+        contentType: isNote ? 'Photo' : 'Video',
         normalizedUrl: canonical,
         creatorHint: null,
-        confidenceMs: 0.2,
+        confidenceMs: 0.12,
         directPlatformUrl: canonical,
         platformSearchUrl: buildPlatformSearchUrl('douyin', videoId),
-      };
-    }
-
-    // 7. Threads
-    if (host === 'threads.net' || host.endsWith('.threads.net') || host === 'threads.com') {
-      const postMatch =
-        path.match(/\/@([^/]+)\/post\/([A-Za-z0-9_-]+)/i) || path.match(/\/t\/([A-Za-z0-9_-]+)/i);
-      const creatorHint = postMatch && postMatch[2] ? `@${postMatch[1]}` : null;
-      const videoId = postMatch ? postMatch[2] || postMatch[1] : 'threads-video';
-      const canonical = parsedUrl.toString();
-
-      return {
-        detected: true,
-        isUrl: true,
-        platform: PLATFORMS.threads,
-        videoId,
-        contentType: 'Post',
-        normalizedUrl: canonical,
-        creatorHint,
-        confidenceMs: 0.21,
-        directPlatformUrl: canonical,
-        platformSearchUrl: buildPlatformSearchUrl('threads', videoId),
       };
     }
 
@@ -589,23 +796,32 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       host === 'reddit.com' ||
       host.endsWith('.reddit.com') ||
       host === 'redd.it' ||
-      host === 'v.redd.it'
+      host === 'v.redd.it' ||
+      host === 'i.redd.it'
     ) {
       const commentMatch = path.match(/\/r\/([^/]+)\/comments\/([A-Za-z0-9]+)/i);
-      const shortMatch = path.match(/^\/([A-Za-z0-9]+)\/?$/);
+      const galleryMatch = path.match(/\/gallery\/([A-Za-z0-9]+)/i);
+      const shortMatch = path.match(/^\/([A-Za-z0-9._-]+)\/?$/);
       const creatorHint = commentMatch ? `r/${commentMatch[1]}` : null;
-      const videoId = commentMatch ? commentMatch[2] : shortMatch ? shortMatch[1] : 'reddit-video';
+      const isPhoto = host === 'i.redd.it' || Boolean(galleryMatch);
+      const videoId = commentMatch
+        ? commentMatch[2]
+        : galleryMatch
+          ? galleryMatch[1]
+          : shortMatch
+            ? shortMatch[1]
+            : 'reddit-media';
 
       return {
         detected: true,
         isUrl: true,
         platform: PLATFORMS.reddit,
         videoId,
-        contentType: 'Video',
-        normalizedUrl: parsedUrl.toString(),
+        contentType: isPhoto ? 'Photo' : 'Video',
+        normalizedUrl: cleanedUrl.toString(),
         creatorHint,
-        confidenceMs: 0.24,
-        directPlatformUrl: parsedUrl.toString(),
+        confidenceMs: 0.14,
+        directPlatformUrl: cleanedUrl.toString(),
         platformSearchUrl: buildPlatformSearchUrl('reddit', videoId),
       };
     }
@@ -624,7 +840,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
         contentType: 'Video',
         normalizedUrl: canonical,
         creatorHint: null,
-        confidenceMs: 0.16,
+        confidenceMs: 0.12,
         directPlatformUrl: canonical,
         platformSearchUrl: buildPlatformSearchUrl('vimeo', videoId),
       };
@@ -634,7 +850,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
     if (host === 'bilibili.com' || host.endsWith('.bilibili.com') || host === 'b23.tv') {
       const bvMatch = path.match(/\/(BV[A-Za-z0-9]+|av\d+)/i) || path.match(/^\/([A-Za-z0-9]+)/);
       const videoId = bvMatch ? bvMatch[1] : 'bilibili-video';
-      const canonical = parsedUrl.toString();
+      const canonical = cleanedUrl.toString();
 
       return {
         detected: true,
@@ -644,18 +860,18 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
         contentType: 'Video',
         normalizedUrl: canonical,
         creatorHint: null,
-        confidenceMs: 0.19,
+        confidenceMs: 0.12,
         directPlatformUrl: canonical,
         platformSearchUrl: buildPlatformSearchUrl('bilibili', videoId),
       };
     }
 
     // 11. Pinterest
-    if (host.includes('pinterest.') || host === 'pin.it') {
+    if (host.includes('pinterest.') || host === 'pin.it' || host === 'pinimg.com') {
       const pinMatch =
         path.match(/\/pin\/(?:[^/]*--)?(\d+)/i) || path.match(/^\/([A-Za-z0-9]+)\/?$/);
       const videoId = pinMatch ? pinMatch[1] : 'pinterest-pin';
-      const canonical = parsedUrl.toString();
+      const canonical = cleanedUrl.toString();
 
       return {
         detected: true,
@@ -665,7 +881,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
         contentType: 'Pin',
         normalizedUrl: canonical,
         creatorHint: null,
-        confidenceMs: 0.2,
+        confidenceMs: 0.12,
         directPlatformUrl: canonical,
         platformSearchUrl: buildPlatformSearchUrl('pinterest', videoId),
       };
@@ -683,10 +899,10 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
         platform: PLATFORMS.soundcloud,
         videoId,
         contentType: 'Track',
-        normalizedUrl: parsedUrl.toString(),
+        normalizedUrl: cleanedUrl.toString(),
         creatorHint,
-        confidenceMs: 0.2,
-        directPlatformUrl: parsedUrl.toString(),
+        confidenceMs: 0.12,
+        directPlatformUrl: cleanedUrl.toString(),
         platformSearchUrl: buildPlatformSearchUrl('soundcloud', videoId),
       };
     }
@@ -703,10 +919,10 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
         platform: PLATFORMS.twitch,
         videoId,
         contentType: 'Clip',
-        normalizedUrl: parsedUrl.toString(),
+        normalizedUrl: cleanedUrl.toString(),
         creatorHint: null,
-        confidenceMs: 0.21,
-        directPlatformUrl: parsedUrl.toString(),
+        confidenceMs: 0.12,
+        directPlatformUrl: cleanedUrl.toString(),
         platformSearchUrl: buildPlatformSearchUrl('twitch', videoId),
       };
     }
@@ -725,7 +941,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
         contentType: 'Video',
         normalizedUrl: canonical,
         creatorHint: null,
-        confidenceMs: 0.19,
+        confidenceMs: 0.12,
         directPlatformUrl: canonical,
         platformSearchUrl: buildPlatformSearchUrl('dailymotion', videoId),
       };
@@ -735,13 +951,13 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
   // Shorthand / Keyword detection
   const lower = trimmed.toLowerCase();
   const keywordMap: Array<{keys: string[]; id: PlatformId}> = [
+    {keys: ['facebook', 'fb ', 'fb watch', 'fb reel'], id: 'facebook'},
+    {keys: ['instagram', 'ig ', 'insta', 'reel'], id: 'instagram'},
+    {keys: ['threads'], id: 'threads'},
     {keys: ['tiktok', 'tik tok', 'tt '], id: 'tiktok'},
     {keys: ['youtube', 'yt ', 'youtu.be', 'shorts'], id: 'youtube'},
-    {keys: ['instagram', 'ig ', 'insta', 'reel'], id: 'instagram'},
-    {keys: ['facebook', 'fb ', 'fb watch'], id: 'facebook'},
     {keys: ['twitter', 'x.com'], id: 'twitter'},
     {keys: ['douyin', '抖音'], id: 'douyin'},
-    {keys: ['threads'], id: 'threads'},
     {keys: ['reddit', 'r/'], id: 'reddit'},
     {keys: ['vimeo'], id: 'vimeo'},
     {keys: ['bilibili', 'bv1'], id: 'bilibili'},
@@ -763,9 +979,10 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
         contentType: 'Search',
         normalizedUrl: trimmed,
         creatorHint: handleMatch ? handleMatch[0] : null,
-        confidenceMs: 0.25,
+        confidenceMs: 0.15,
         directPlatformUrl: buildPlatformSearchUrl(entry.id, trimmed),
         platformSearchUrl: buildPlatformSearchUrl(entry.id, trimmed),
+        isMetaPlatform: ['facebook', 'instagram', 'threads'].includes(entry.id),
       };
     }
   }
@@ -778,14 +995,14 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
     contentType: 'Search',
     normalizedUrl: trimmed,
     creatorHint: null,
-    confidenceMs: 0.3,
+    confidenceMs: 0.2,
     directPlatformUrl: null,
     platformSearchUrl: null,
   };
 }
 
 /**
- * Calculates accurate byte size based on duration, quality bitrate, and whether audio is included, muted, or audio-only.
+ * Calculates accurate byte size based on duration, quality bitrate, and whether audio is included, muted, audio-only, or image-only.
  */
 export function calculateStreamSizeBytes(
   durationSec: number,
@@ -793,6 +1010,10 @@ export function calculateStreamSizeBytes(
   audioMode: AudioMode,
   realBaseSizeBytes?: number,
 ): number {
+  if (audioMode === 'image_only') {
+    return 480 * 1024; // ~480 KB high-resolution JPG/PNG photo
+  }
+
   const safeDuration = Math.max(5, durationSec || 30);
   const audioBitrateKbps = 256;
   const audioBytes = Math.round((safeDuration * audioBitrateKbps * 1000) / 8);
@@ -832,9 +1053,14 @@ export function buildDownloadFilename(
   video: Pick<ResolvedVideo, 'platformId' | 'videoId' | 'title'>,
   qualityId: QualityId,
   audioMode: AudioMode,
+  imageIndex?: number,
 ): string {
   const cleanId =
-    (video.videoId || 'video').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'media';
+    (video.videoId || 'media').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'media';
+  if (audioMode === 'image_only') {
+    const suffix = imageIndex !== undefined ? `_img${imageIndex + 1}` : '_original-photo';
+    return `${video.platformId}_${cleanId}${suffix}.jpg`;
+  }
   if (audioMode === 'audio_only') {
     return `${video.platformId}_${cleanId}_320kbps_audio-only.mp3`;
   }
@@ -843,7 +1069,7 @@ export function buildDownloadFilename(
 }
 
 /**
- * Builds a ResolvedVideo structure from detection + live extracted stream data.
+ * Builds a ResolvedVideo structure from detection + live extracted stream & photo data.
  */
 export function resolveVideoFromDetection(
   rawInput: string,
@@ -863,12 +1089,15 @@ export function resolveVideoFromDetection(
     audioStreamUrl?: string;
     hdSizeBytes?: number;
     sdSizeBytes?: number;
+    images?: ExtractedImageItem[];
     qualities?: QualityOption[];
+    resolveTimeMs?: number;
     resolvedVia?: ResolvedVideo['resolvedVia'];
+    contentTypeOverride?: DetectionResult['contentType'];
   },
 ): ResolvedVideo {
-  const platform = detection.platform || PLATFORMS.youtube;
-  const videoId = detection.videoId || 'video';
+  const platform = detection.platform || PLATFORMS.facebook;
+  const videoId = detection.videoId || 'media';
 
   const maxOrder: QualityId[] = ['2160p', '1440p', '1080p', '720p', '480p', '360p'];
   const maxIdx = Math.max(0, maxOrder.indexOf(platform.maxResolution));
@@ -887,7 +1116,10 @@ export function resolveVideoFromDetection(
         realSizeBytes: liveData.sdSizeBytes,
       };
     }
-    if ((q.id === '480p' || q.id === '360p') && (liveData?.wmStreamUrl || liveData?.videoStreamUrl)) {
+    if (
+      (q.id === '480p' || q.id === '360p') &&
+      (liveData?.wmStreamUrl || liveData?.videoStreamUrl)
+    ) {
       return {
         ...q,
         directStreamUrl: liveData.wmStreamUrl || liveData.videoStreamUrl,
@@ -896,32 +1128,50 @@ export function resolveVideoFromDetection(
     return q;
   });
 
+  const effectiveContentType =
+    liveData?.contentTypeOverride ||
+    (detection.contentType === 'Search' ? 'Video' : detection.contentType);
+
   const isVertical =
     platform.id === 'tiktok' ||
     platform.id === 'instagram' ||
     platform.id === 'douyin' ||
     platform.id === 'threads' ||
-    detection.contentType === 'Shorts' ||
-    detection.contentType === 'Reel';
+    effectiveContentType === 'Shorts' ||
+    effectiveContentType === 'Reel';
 
   const handle =
     liveData?.author_handle ||
     detection.creatorHint ||
-    (liveData?.author_name ? `@${liveData.author_name.replace(/\s+/g, '').toLowerCase()}` : `@${platform.id}`);
+    (liveData?.author_name
+      ? `@${liveData.author_name.replace(/\s+/g, '').toLowerCase()}`
+      : `@${platform.id}`);
+
+  const extractedImages: ExtractedImageItem[] =
+    liveData?.images && liveData.images.length > 0
+      ? liveData.images
+      : liveData?.thumbnailUrl
+        ? [
+            {
+              id: `${videoId}-cover-1`,
+              url: liveData.thumbnailUrl,
+              label: `Ảnh gốc / Ảnh bìa độ phân giải cao (${platform.name})`,
+              format: 'JPG',
+            },
+          ]
+        : [];
 
   return {
     id: `${platform.id}-${videoId}`,
     videoId,
     platformId: platform.id,
     platformName: platform.name,
-    contentType: detection.contentType === 'Search' ? 'Video' : detection.contentType,
-    title:
-      liveData?.title ||
-      `${platform.name} ${detection.contentType} (${videoId})`,
+    contentType: effectiveContentType,
+    title: liveData?.title || `${platform.name} ${effectiveContentType} (${videoId})`,
     authorName: liveData?.author_name || handle.replace(/^@/, ''),
     authorHandle: handle,
     authorUrl: liveData?.author_url || `https://${platform.domain}`,
-    durationSec: liveData?.durationSec || 30,
+    durationSec: liveData?.durationSec || (effectiveContentType === 'Photo' ? 0 : 30),
     publishedAt: 'Trực tiếp từ nguồn gốc',
     viewCount: liveData?.viewCount || 0,
     likeCount: liveData?.likeCount || 0,
@@ -933,26 +1183,31 @@ export function resolveVideoFromDetection(
     videoCodec: 'H.264 / AVC1 High@L4.2',
     aspectRatio: isVertical ? '9:16' : '16:9',
     previewAccent: platform.accentHex,
-    thumbnailUrl: liveData?.thumbnailUrl,
+    thumbnailUrl: liveData?.thumbnailUrl || extractedImages[0]?.url,
     videoStreamUrl: liveData?.videoStreamUrl || liveData?.hdStreamUrl,
     hdStreamUrl: liveData?.hdStreamUrl || liveData?.videoStreamUrl,
     wmStreamUrl: liveData?.wmStreamUrl,
     audioStreamUrl: liveData?.audioStreamUrl,
-    qualities: liveData?.qualities && liveData.qualities.length > 0 ? liveData.qualities : defaultQualities,
+    images: extractedImages,
+    qualities:
+      liveData?.qualities && liveData.qualities.length > 0 ? liveData.qualities : defaultQualities,
+    resolveTimeMs: liveData?.resolveTimeMs,
     resolvedVia: liveData?.resolvedVia || 'url-inspector',
   };
 }
 
 /**
- * Client-side real stream extractor that works directly in the browser (including on static GitHub Pages)
- * using CORS-enabled public APIs (TikWM for TikTok/Douyin, FxTwitter for X/Twitter, Dailymotion API, and Noembed).
+ * Client-side real stream & photo extractor that works directly in the browser (including on static GitHub Pages)
+ * using CORS-enabled public APIs (TikWM for TikTok/Douyin videos & photo slideshows, FxTwitter for X/Twitter videos & multi-photos,
+ * YouTube high-res thumbnails, Dailymotion API, and Noembed).
  */
 export async function extractRealVideoClientSide(rawInput: string): Promise<ResolvedVideo> {
+  const startMs = Date.now();
   const detection = detectSocialPlatform(rawInput);
   const targetUrl = detection.normalizedUrl || rawInput.trim();
   const platformId = detection.platform?.id;
 
-  // 1. TikTok & Douyin via TikWM CORS API
+  // 1. TikTok & Douyin via TikWM CORS API (supports both Videos and Photo Slideshow Carousels!)
   if (platformId === 'tiktok' || platformId === 'douyin') {
     try {
       const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(targetUrl)}&hd=1`;
@@ -970,6 +1225,8 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
             music?: string;
             cover?: string;
             origin_cover?: string;
+            ai_dynamic_cover?: string;
+            images?: string[];
             size?: number;
             hd_size?: number;
             play_count?: number;
@@ -979,30 +1236,60 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
         };
         if (json.code === 0 && json.data) {
           const d = json.data;
+          const images: ExtractedImageItem[] = [];
+          if (Array.isArray(d.images) && d.images.length > 0) {
+            d.images.forEach((imgUrl, idx) => {
+              images.push({
+                id: `${d.id || detection.videoId}-slide-${idx + 1}`,
+                url: imgUrl,
+                label: `Ảnh Slideshow #${idx + 1} (Gốc không logo)`,
+                format: 'JPG',
+              });
+            });
+          }
+          const bestCover = d.origin_cover || d.cover;
+          if (bestCover) {
+            images.push({
+              id: `${d.id || detection.videoId}-cover`,
+              url: bestCover,
+              label: 'Ảnh bìa gốc (Origin Cover HD)',
+              format: 'JPG',
+            });
+          }
+
+          const isPhotoCarousel = Array.isArray(d.images) && d.images.length > 0;
+
           return resolveVideoFromDetection(rawInput, detection, {
-            title: d.title || `TikTok Video #${d.id || detection.videoId}`,
+            title:
+              d.title ||
+              `${detection.platform?.name || 'TikTok'} ${isPhotoCarousel ? 'Album Ảnh' : 'Video'} #${
+                d.id || detection.videoId
+              }`,
             author_name: d.author?.nickname || d.author?.unique_id,
             author_handle: d.author?.unique_id ? `@${d.author.unique_id}` : undefined,
-            durationSec: d.duration || 30,
+            durationSec: d.duration || (isPhotoCarousel ? 0 : 30),
             viewCount: d.play_count || 0,
             likeCount: d.digg_count || 0,
-            thumbnailUrl: d.origin_cover || d.cover,
-            videoStreamUrl: d.play || d.hdplay,
-            hdStreamUrl: d.hdplay || d.play,
-            wmStreamUrl: d.wmplay || d.play,
+            thumbnailUrl: images[0]?.url || bestCover,
+            videoStreamUrl: isPhotoCarousel ? undefined : d.play || d.hdplay,
+            hdStreamUrl: isPhotoCarousel ? undefined : d.hdplay || d.play,
+            wmStreamUrl: isPhotoCarousel ? undefined : d.wmplay || d.play,
             audioStreamUrl: d.music,
             hdSizeBytes: d.hd_size || d.size,
             sdSizeBytes: d.size,
+            images,
+            contentTypeOverride: isPhotoCarousel ? 'Photo' : undefined,
+            resolveTimeMs: Date.now() - startMs,
             resolvedVia: 'real-stream-api',
           });
         }
       }
     } catch {
-      // Fall through to universal oEmbed
+      // Fall through
     }
   }
 
-  // 2. X / Twitter via FxTwitter CORS API
+  // 2. X / Twitter via FxTwitter CORS API (supports both Videos and Multi-Photo tweets!)
   if (platformId === 'twitter' && detection.videoId) {
     try {
       const userPart = (detection.creatorHint || 'i').replace(/^@/, '');
@@ -1022,12 +1309,18 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
                 duration?: number;
                 variants?: Array<{bitrate?: number; url?: string; content_type?: string}>;
               }>;
+              photos?: Array<{
+                url?: string;
+                width?: number;
+                height?: number;
+              }>;
             };
           };
         };
         const tweet = json.tweet;
-        const vid = tweet?.media?.videos?.[0];
         if (tweet) {
+          const vid = tweet.media?.videos?.[0];
+          const photos = tweet.media?.photos || [];
           const mp4Variants = (vid?.variants || [])
             .filter((v) => v.url && (!v.content_type || v.content_type.includes('mp4')))
             .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
@@ -1035,17 +1328,42 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
           const midUrl = mp4Variants[Math.min(1, mp4Variants.length - 1)]?.url || bestUrl;
           const lowUrl = mp4Variants[mp4Variants.length - 1]?.url || bestUrl;
 
+          const images: ExtractedImageItem[] = [];
+          photos.forEach((p, idx) => {
+            if (p.url) {
+              images.push({
+                id: `${detection.videoId}-photo-${idx + 1}`,
+                url: p.url,
+                label: `Ảnh X/Twitter #${idx + 1} (${p.width || 1080}×${p.height || 1080})`,
+                width: p.width,
+                height: p.height,
+                format: 'JPG',
+              });
+            }
+          });
+          if (vid?.thumbnail_url) {
+            images.push({
+              id: `${detection.videoId}-thumb`,
+              url: vid.thumbnail_url,
+              label: 'Ảnh bìa Video X/Twitter',
+              format: 'JPG',
+            });
+          }
+
           return resolveVideoFromDetection(rawInput, detection, {
-            title: tweet.text || `X Video #${detection.videoId}`,
+            title: tweet.text || `X Post #${detection.videoId}`,
             author_name: tweet.author?.name,
             author_handle: tweet.author?.screen_name ? `@${tweet.author.screen_name}` : undefined,
-            durationSec: Math.round(vid?.duration || 30),
+            durationSec: Math.round(vid?.duration || (photos.length > 0 && !vid ? 0 : 30)),
             viewCount: tweet.views || 0,
             likeCount: tweet.likes || 0,
-            thumbnailUrl: vid?.thumbnail_url,
+            thumbnailUrl: vid?.thumbnail_url || images[0]?.url,
             videoStreamUrl: midUrl,
             hdStreamUrl: bestUrl,
             wmStreamUrl: lowUrl,
+            images,
+            contentTypeOverride: photos.length > 0 && !vid ? 'Photo' : undefined,
+            resolveTimeMs: Date.now() - startMs,
             resolvedVia: 'real-stream-api',
           });
         }
@@ -1059,23 +1377,37 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
   if (platformId === 'dailymotion' && detection.videoId) {
     try {
       const dmRes = await fetch(
-        `https://api.dailymotion.com/video/${detection.videoId}?fields=id,title,duration,thumbnail_720_url,url,owner.screenname,views_total`,
+        `https://api.dailymotion.com/video/${detection.videoId}?fields=id,title,duration,thumbnail_1080_url,thumbnail_720_url,url,owner.screenname,views_total`,
       );
       if (dmRes.ok) {
         const dm = (await dmRes.json()) as {
           title?: string;
           duration?: number;
+          thumbnail_1080_url?: string;
           thumbnail_720_url?: string;
           views_total?: number;
           'owner.screenname'?: string;
         };
+        const thumb = dm.thumbnail_1080_url || dm.thumbnail_720_url;
+        const images: ExtractedImageItem[] = thumb
+          ? [
+              {
+                id: `${detection.videoId}-dm-1080`,
+                url: thumb,
+                label: 'Ảnh bìa Dailymotion Full HD (1080p)',
+                format: 'JPG',
+              },
+            ]
+          : [];
         return resolveVideoFromDetection(rawInput, detection, {
           title: dm.title,
           author_name: dm['owner.screenname'],
           author_handle: dm['owner.screenname'] ? `@${dm['owner.screenname']}` : undefined,
           durationSec: dm.duration || 60,
           viewCount: dm.views_total || 0,
-          thumbnailUrl: dm.thumbnail_720_url,
+          thumbnailUrl: thumb,
+          images,
+          resolveTimeMs: Date.now() - startMs,
           resolvedVia: 'oembed-live',
         });
       }
@@ -1084,7 +1416,7 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
     }
   }
 
-  // 4. Universal CORS oEmbed (Noembed) for YouTube, Vimeo, SoundCloud, Reddit, etc.
+  // 4. Universal CORS oEmbed (Noembed) + YouTube Multi-Resolution Image Extractor
   try {
     const neRes = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(targetUrl)}`);
     if (neRes.ok) {
@@ -1094,12 +1426,43 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
         author_url?: string;
         thumbnail_url?: string;
       };
-      if (ne.title) {
+      const images: ExtractedImageItem[] = [];
+      if (platformId === 'youtube' && detection.videoId) {
+        images.push(
+          {
+            id: `${detection.videoId}-maxres`,
+            url: `https://i.ytimg.com/vi/${detection.videoId}/maxresdefault.jpg`,
+            label: 'Ảnh bìa YouTube MaxRes (1920×1080 JPG)',
+            width: 1920,
+            height: 1080,
+            format: 'JPG',
+          },
+          {
+            id: `${detection.videoId}-hq`,
+            url: `https://i.ytimg.com/vi/${detection.videoId}/hqdefault.jpg`,
+            label: 'Ảnh bìa YouTube HQ (480×360 JPG)',
+            width: 480,
+            height: 360,
+            format: 'JPG',
+          },
+        );
+      } else if (ne.thumbnail_url) {
+        images.push({
+          id: `${detection.videoId || 'media'}-thumb`,
+          url: ne.thumbnail_url,
+          label: `Ảnh gốc / Ảnh bìa (${detection.platform?.name || 'Media'})`,
+          format: 'JPG',
+        });
+      }
+
+      if (ne.title || images.length > 0) {
         return resolveVideoFromDetection(rawInput, detection, {
           title: ne.title,
           author_name: ne.author_name,
           author_url: ne.author_url,
-          thumbnailUrl: ne.thumbnail_url,
+          thumbnailUrl: images[0]?.url || ne.thumbnail_url,
+          images,
+          resolveTimeMs: Date.now() - startMs,
           resolvedVia: 'oembed-live',
         });
       }
@@ -1108,7 +1471,9 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
     // Fall through
   }
 
-  return resolveVideoFromDetection(rawInput, detection);
+  return resolveVideoFromDetection(rawInput, detection, {
+    resolveTimeMs: Date.now() - startMs,
+  });
 }
 
 /**
@@ -1144,7 +1509,7 @@ export async function searchLiveVideos(
     ];
   }
 
-  // Live video search via Dailymotion public CORS API + multi-platform deep search
+  // Live video search via Dailymotion public CORS API
   try {
     const dmUrl = `https://api.dailymotion.com/videos?fields=id,title,duration,thumbnail_720_url,url,owner.screenname,views_total&limit=9&search=${encodeURIComponent(
       q,
