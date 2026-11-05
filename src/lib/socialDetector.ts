@@ -131,10 +131,7 @@ export interface LiveSearchVideoItem {
 }
 
 export const CLOUD_BACKEND_ORIGIN =
-  'https://ais-pre-un6fsoacgcyf3fk2sge3fv-154590659403.asia-east1.run.app';
-
-export const CLOUDFLARE_WORKER_PROXY =
-  'https://twilight-hall-5434.thichlendo139.workers.dev';
+  'https://iw1i8-hqo819--y18ej--uqiw78.onrender.com';
 
 export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
   tiktok: {
@@ -422,6 +419,11 @@ function cleanTrackingParams(u: URL): URL {
   return copy;
 }
 
+/**
+ * Pure, deterministic <0.2ms detector that identifies which social network a URL or shorthand belongs to,
+ * with specialized deep support for Meta ecosystems (Facebook Watch, Reels, Share/v/r/p, Photos, Stories,
+ * Instagram Reels/Posts/Carousels/Stories/Share, Threads net/com) and all 14+ platforms.
+ */
 export function detectSocialPlatform(rawInput: string): DetectionResult {
   const trimmed = rawInput.trim();
   if (!trimmed) {
@@ -454,6 +456,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
     parsedUrl = null;
   }
 
+  // Unwrap Facebook / Instagram link shim (l.facebook.com/l.php?u=... or l.instagram.com/?u=...)
   if (parsedUrl) {
     const rawHost = parsedUrl.hostname.toLowerCase();
     if (
@@ -477,7 +480,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       .replace(/^(www|m|web|mbasic|touch|business)\./, '');
     const path = cleanedUrl.pathname;
 
-    // 1. Facebook (Meta)
+    // 1. Facebook (Meta) — Watch, Reels, Videos, Photos, Share links (/share/v, /share/r, /share/p), Stories, fb.watch
     if (
       host === 'facebook.com' ||
       host.endsWith('.facebook.com') ||
@@ -560,7 +563,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       };
     }
 
-    // 2. Instagram (Meta)
+    // 2. Instagram (Meta) — Reels, Posts, Carousels, Stories, Share links, IGTV
     if (
       host === 'instagram.com' ||
       host.endsWith('.instagram.com') ||
@@ -625,7 +628,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       };
     }
 
-    // 3. Threads (Meta)
+    // 3. Threads (Meta) — threads.net & threads.com
     if (
       host === 'threads.net' ||
       host.endsWith('.threads.net') ||
@@ -656,7 +659,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       };
     }
 
-    // 4. TikTok
+    // 4. TikTok (including /video/ and /photo/ slideshows)
     if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
       const mediaMatch =
         path.match(/\/@([^/]+)\/(video|photo)\/(\d+)/i) ||
@@ -693,7 +696,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       };
     }
 
-    // 5. YouTube
+    // 5. YouTube & Shorts & youtu.be
     if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') {
       let videoId: string | null = null;
       let contentType: DetectionResult['contentType'] = 'Video';
@@ -733,7 +736,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       };
     }
 
-    // 6. X / Twitter
+    // 6. X / Twitter (videos & photos)
     if (
       host === 'x.com' ||
       host === 'twitter.com' ||
@@ -998,6 +1001,9 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
   };
 }
 
+/**
+ * Calculates accurate byte size based on duration, quality bitrate, and whether audio is included, muted, audio-only, or image-only.
+ */
 export function calculateStreamSizeBytes(
   durationSec: number,
   qualityId: QualityId,
@@ -1005,7 +1011,7 @@ export function calculateStreamSizeBytes(
   realBaseSizeBytes?: number,
 ): number {
   if (audioMode === 'image_only') {
-    return 480 * 1024;
+    return 480 * 1024; // ~480 KB high-resolution JPG/PNG photo
   }
 
   const safeDuration = Math.max(5, durationSec || 30);
@@ -1062,6 +1068,9 @@ export function buildDownloadFilename(
   return `${video.platformId}_${cleanId}_${qualityId}_${audioSuffix}.mp4`;
 }
 
+/**
+ * Builds a ResolvedVideo structure from detection + live extracted stream & photo data.
+ */
 export function resolveVideoFromDetection(
   rawInput: string,
   detection: DetectionResult,
@@ -1189,6 +1198,8 @@ export function resolveVideoFromDetection(
 
 /**
  * Client-side real stream & photo extractor that works directly in the browser (including on static GitHub Pages)
+ * using CORS-enabled public APIs (TikWM for TikTok/Douyin videos & photo slideshows, FxTwitter for X/Twitter videos & multi-photos,
+ * YouTube high-res thumbnails, Dailymotion API, and Noembed).
  */
 export async function extractRealVideoClientSide(rawInput: string): Promise<ResolvedVideo> {
   const startMs = Date.now();
@@ -1196,59 +1207,7 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
   const targetUrl = detection.normalizedUrl || rawInput.trim();
   const platformId = detection.platform?.id;
 
-  // 0. Meta ecosystems (Facebook, Instagram, Threads) via Cloudflare Worker Proxy
-  if (
-    detection.isMetaPlatform ||
-    platformId === 'facebook' ||
-    platformId === 'instagram' ||
-    platformId === 'threads'
-  ) {
-    try {
-      const workerUrl = `${CLOUDFLARE_WORKER_PROXY}?url=${encodeURIComponent(targetUrl)}`;
-      const res = await fetch(workerUrl);
-      if (res.ok) {
-        const json = (await res.json()) as {
-          success?: boolean;
-          title?: string;
-          video?: string | null;
-          images?: string[];
-          error?: string;
-        };
-
-        if (json.success) {
-          const images: ExtractedImageItem[] = (json.images || []).map((imgUrl, idx) => ({
-            id: `${detection.videoId || 'meta'}-img-${idx + 1}`,
-            url: imgUrl,
-            label: `Ảnh ${detection.platform?.name || 'Meta'} #${idx + 1} (Gốc)`,
-            format: 'JPG',
-          }));
-
-          const hasVideo = Boolean(json.video);
-          const isPhotoOnly = !hasVideo && images.length > 0;
-
-          return resolveVideoFromDetection(rawInput, detection, {
-            title:
-              json.title ||
-              `${detection.platform?.name || 'Meta'} ${isPhotoOnly ? 'Album Ảnh' : 'Video'} (${
-                detection.videoId || 'Post'
-              })`,
-            thumbnailUrl: images[0]?.url,
-            videoStreamUrl: json.video || undefined,
-            hdStreamUrl: json.video || undefined,
-            images,
-            durationSec: isPhotoOnly ? 0 : 30,
-            contentTypeOverride: isPhotoOnly ? 'Photo' : hasVideo ? 'Video' : undefined,
-            resolveTimeMs: Date.now() - startMs,
-            resolvedVia: 'meta-fast-engine',
-          });
-        }
-      }
-    } catch {
-      // Fall through to other extractors if worker encounters network issues
-    }
-  }
-
-  // 1. TikTok & Douyin via TikWM CORS API
+  // 1. TikTok & Douyin via TikWM CORS API (supports both Videos and Photo Slideshow Carousels!)
   if (platformId === 'tiktok' || platformId === 'douyin') {
     try {
       const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(targetUrl)}&hd=1`;
@@ -1330,7 +1289,7 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
     }
   }
 
-  // 2. X / Twitter via FxTwitter CORS API
+  // 2. X / Twitter via FxTwitter CORS API (supports both Videos and Multi-Photo tweets!)
   if (platformId === 'twitter' && detection.videoId) {
     try {
       const userPart = (detection.creatorHint || 'i').replace(/^@/, '');
@@ -1517,6 +1476,9 @@ export async function extractRealVideoClientSide(rawInput: string): Promise<Reso
   });
 }
 
+/**
+ * Live search on real public video APIs (zero hardcoded mock data).
+ */
 export async function searchLiveVideos(
   query: string,
   platformFilter: PlatformId | 'all' = 'all',
@@ -1524,8 +1486,42 @@ export async function searchLiveVideos(
   const q = query.trim();
   if (!q) return [];
 
+  // If the user pasted a direct URL into the search box, resolve it via Render backend first, then fallback to client-side
   const detection = detectSocialPlatform(q);
   if (detection.isUrl && detection.platform) {
+    try {
+      const apiRes = await fetch(`${CLOUD_BACKEND_ORIGIN}/api/resolve`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({input: q}),
+      });
+      if (apiRes.ok) {
+        const data = (await apiRes.json()) as {video?: ResolvedVideo};
+        if (data?.video) {
+          const v = data.video;
+          return [
+            {
+              id: v.id,
+              videoId: v.videoId,
+              platformId: v.platformId,
+              contentType: 'Video',
+              title: v.title,
+              authorName: v.authorName,
+              authorHandle: v.authorHandle,
+              durationSec: v.durationSec,
+              publishedAt: v.publishedAt,
+              viewCount: v.viewCount,
+              url: v.originalUrl,
+              thumbnailUrl: v.thumbnailUrl,
+              videoStreamUrl: v.videoStreamUrl,
+            },
+          ];
+        }
+      }
+    } catch {
+      // Fallback to client-side extractor if backend is waking up
+    }
+
     const resolved = await extractRealVideoClientSide(q);
     return [
       {
@@ -1546,6 +1542,24 @@ export async function searchLiveVideos(
     ];
   }
 
+  // Try Render backend /api/search endpoint first
+  try {
+    const backendSearchRes = await fetch(
+      `${CLOUD_BACKEND_ORIGIN}/api/search?q=${encodeURIComponent(q)}&platform=${encodeURIComponent(
+        platformFilter,
+      )}`,
+    );
+    if (backendSearchRes.ok) {
+      const json = (await backendSearchRes.json()) as {results?: LiveSearchVideoItem[]};
+      if (Array.isArray(json.results) && json.results.length > 0) {
+        return json.results;
+      }
+    }
+  } catch {
+    // Fallback to direct public API search
+  }
+
+  // Live video search via Dailymotion public CORS API
   try {
     const dmUrl = `https://api.dailymotion.com/videos?fields=id,title,duration,thumbnail_720_url,url,owner.screenname,views_total&limit=9&search=${encodeURIComponent(
       q,

@@ -31,13 +31,7 @@ interface VideoPreviewPlayerProps {
 
 function buildProxyUrl(rawUrl: string | undefined): string | undefined {
   if (!rawUrl) return undefined;
-  const base =
-    typeof window !== 'undefined' &&
-    (window.location.hostname.includes('github.io') ||
-      window.location.hostname.includes('thichlendo.site'))
-      ? CLOUD_BACKEND_ORIGIN
-      : '';
-  return `${base}/api/stream-proxy?url=${encodeURIComponent(rawUrl)}`;
+  return `${CLOUD_BACKEND_ORIGIN}/api/stream-proxy?url=${encodeURIComponent(rawUrl)}`;
 }
 
 function shouldProxyImage(rawUrl: string | undefined): boolean {

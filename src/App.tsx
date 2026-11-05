@@ -37,12 +37,7 @@ import {DownloadHistoryTable, type DownloadHistoryItem} from './components/Downl
 const HISTORY_STORAGE_KEY = 'omnidown_real_history_v2';
 
 function getApiBaseUrl(): string {
-  if (typeof window === 'undefined') return '';
-  const host = window.location.hostname;
-  if (host.includes('github.io') || host.includes('thichlendo.site')) {
-    return CLOUD_BACKEND_ORIGIN;
-  }
-  return '';
+  return CLOUD_BACKEND_ORIGIN;
 }
 
 export function App() {
