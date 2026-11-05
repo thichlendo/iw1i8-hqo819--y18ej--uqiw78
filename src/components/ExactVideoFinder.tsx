@@ -3,6 +3,7 @@ import {Search, ExternalLink, ArrowUpRight, CheckCircle2, Loader2} from 'lucide-
 import {
   PLATFORM_LIST,
   PLATFORMS,
+  CLOUD_BACKEND_ORIGIN,
   searchLiveVideos,
   buildPlatformSearchUrl,
   formatDuration,
@@ -39,6 +40,8 @@ export const ExactVideoFinder: React.FC<ExactVideoFinderProps> = ({
     try {
       const items = await searchLiveVideos(q, selectedPlatform);
       setResults(items);
+    } catch {
+      setResults([]);
     } finally {
       setIsSearching(false);
     }
@@ -53,10 +56,10 @@ export const ExactVideoFinder: React.FC<ExactVideoFinderProps> = ({
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <h2 id="finder-heading" className="text-2xl font-bold tracking-tight text-white">
-            02. Tìm kiếm video chính xác trên từng Mạng Xã Hội
+            02. Tìm kiếm video chính xác trên từng Mạng Xã Hội (Qua Backend Render)
           </h2>
           <p className="mt-1 text-sm text-slate-400 max-w-2xl">
-            Nhập từ khóa, mã ID hoặc dán link để tìm video thực tế hoặc mở trực tiếp kết quả tìm kiếm chính xác trên mạng xã hội bạn chọn.
+            Nhập từ khóa, mã ID hoặc dán link để truy vấn trực tiếp qua máy chủ Render ({CLOUD_BACKEND_ORIGIN}) hoặc mở kết quả tìm kiếm chính xác trên mạng xã hội bạn chọn.
           </p>
         </div>
 
@@ -91,7 +94,7 @@ export const ExactVideoFinder: React.FC<ExactVideoFinderProps> = ({
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Nhập từ khóa video, @tác_giả hoặc dán link cần tìm..."
+              placeholder="Nhập từ khóa video, @tác_giả hoặc dán link cần phân tích qua Render..."
               className="w-full rounded-xl border border-slate-800 bg-slate-900/90 py-3 pl-11 pr-4 text-sm text-white placeholder-slate-500 transition-colors focus:border-blue-500 focus:outline-none"
             />
           </div>
@@ -104,7 +107,7 @@ export const ExactVideoFinder: React.FC<ExactVideoFinderProps> = ({
             {isSearching ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Đang tìm trực tiếp...</span>
+                <span>Đang tìm qua Render...</span>
               </>
             ) : (
               <>
@@ -162,7 +165,7 @@ export const ExactVideoFinder: React.FC<ExactVideoFinderProps> = ({
       {!hasSearched ? (
         <div className="mt-6 rounded-xl border border-slate-800/80 bg-slate-900/30 p-6">
           <p className="text-sm font-medium text-slate-300">
-            Mở tìm kiếm trực tiếp trên từng mạng xã hội hoặc nhập từ khóa ở ô trên để truy vấn video thực tế:
+            Mở tìm kiếm trực tiếp trên từng mạng xã hội hoặc nhập từ khóa ở ô trên để truy vấn video thực tế qua máy chủ Render:
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             {PLATFORM_LIST.map((plat) => (
@@ -202,6 +205,15 @@ export const ExactVideoFinder: React.FC<ExactVideoFinderProps> = ({
           {results.map((item) => {
             const plat = PLATFORMS[item.platformId];
             const isLoaded = activeVideoId === item.videoId;
+            const thumbSrc =
+              item.thumbnailUrl &&
+              (item.thumbnailUrl.includes('fbcdn.net') ||
+                item.thumbnailUrl.includes('cdninstagram.com') ||
+                item.thumbnailUrl.includes('fbsbx.com'))
+                ? `${CLOUD_BACKEND_ORIGIN}/api/stream-proxy?url=${encodeURIComponent(
+                    item.thumbnailUrl,
+                  )}`
+                : item.thumbnailUrl;
 
             return (
               <article
@@ -213,10 +225,10 @@ export const ExactVideoFinder: React.FC<ExactVideoFinderProps> = ({
                 }`}
               >
                 <div>
-                  {item.thumbnailUrl && (
+                  {thumbSrc && (
                     <div className="mb-3 aspect-video w-full overflow-hidden rounded-lg bg-slate-950">
                       <img
-                        src={item.thumbnailUrl}
+                        src={thumbSrc}
                         alt={item.title}
                         referrerPolicy="no-referrer"
                         className="h-full w-full object-cover"

@@ -111,7 +111,11 @@ export interface ResolvedVideo {
     | 'real-stream-api'
     | 'yt-dlp-live'
     | 'oembed-live'
-    | 'url-inspector';
+    | 'url-inspector'
+    | 'tikwm-live'
+    | 'fxtwitter-live'
+    | 'dailymotion-live'
+    | 'direct-metadata';
 }
 
 export interface LiveSearchVideoItem {
@@ -130,8 +134,11 @@ export interface LiveSearchVideoItem {
   videoStreamUrl?: string;
 }
 
-export const CLOUD_BACKEND_ORIGIN =
-  'https://iw1i8-hqo819--y18ej--uqiw78.onrender.com';
+/**
+ * Render Backend Origin — All analysis, video streaming, FFmpeg processing, and photo extraction
+ * requests are routed through this Node.js backend (`server.ts`).
+ */
+export const CLOUD_BACKEND_ORIGIN = 'https://iw1i8-hqo819--y18ej--uqiw78.onrender.com';
 
 export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
   tiktok: {
@@ -420,9 +427,7 @@ function cleanTrackingParams(u: URL): URL {
 }
 
 /**
- * Pure, deterministic <0.2ms detector that identifies which social network a URL or shorthand belongs to,
- * with specialized deep support for Meta ecosystems (Facebook Watch, Reels, Share/v/r/p, Photos, Stories,
- * Instagram Reels/Posts/Carousels/Stories/Share, Threads net/com) and all 14+ platforms.
+ * Pure, deterministic <0.2ms URL & platform inspector (no network calls).
  */
 export function detectSocialPlatform(rawInput: string): DetectionResult {
   const trimmed = rawInput.trim();
@@ -480,7 +485,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       .replace(/^(www|m|web|mbasic|touch|business)\./, '');
     const path = cleanedUrl.pathname;
 
-    // 1. Facebook (Meta) — Watch, Reels, Videos, Photos, Share links (/share/v, /share/r, /share/p), Stories, fb.watch
+    // 1. Facebook (Meta)
     if (
       host === 'facebook.com' ||
       host.endsWith('.facebook.com') ||
@@ -563,7 +568,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       };
     }
 
-    // 2. Instagram (Meta) — Reels, Posts, Carousels, Stories, Share links, IGTV
+    // 2. Instagram (Meta)
     if (
       host === 'instagram.com' ||
       host.endsWith('.instagram.com') ||
@@ -628,7 +633,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       };
     }
 
-    // 3. Threads (Meta) — threads.net & threads.com
+    // 3. Threads (Meta)
     if (
       host === 'threads.net' ||
       host.endsWith('.threads.net') ||
@@ -659,7 +664,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       };
     }
 
-    // 4. TikTok (including /video/ and /photo/ slideshows)
+    // 4. TikTok
     if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
       const mediaMatch =
         path.match(/\/@([^/]+)\/(video|photo)\/(\d+)/i) ||
@@ -736,7 +741,7 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
       };
     }
 
-    // 6. X / Twitter (videos & photos)
+    // 6. X / Twitter
     if (
       host === 'x.com' ||
       host === 'twitter.com' ||
@@ -1001,9 +1006,6 @@ export function detectSocialPlatform(rawInput: string): DetectionResult {
   };
 }
 
-/**
- * Calculates accurate byte size based on duration, quality bitrate, and whether audio is included, muted, audio-only, or image-only.
- */
 export function calculateStreamSizeBytes(
   durationSec: number,
   qualityId: QualityId,
@@ -1011,7 +1013,7 @@ export function calculateStreamSizeBytes(
   realBaseSizeBytes?: number,
 ): number {
   if (audioMode === 'image_only') {
-    return 480 * 1024; // ~480 KB high-resolution JPG/PNG photo
+    return 480 * 1024;
   }
 
   const safeDuration = Math.max(5, durationSec || 30);
@@ -1069,7 +1071,45 @@ export function buildDownloadFilename(
 }
 
 /**
- * Builds a ResolvedVideo structure from detection + live extracted stream & photo data.
+ * Builds the direct Render backend download endpoint URL (`/api/download`)
+ * so the browser downloads straight from Render without ever doing client-side CDN blob fetches.
+ */
+export function buildBackendDownloadUrl(params: {
+  platformId: PlatformId;
+  videoId: string;
+  title: string;
+  quality: QualityId;
+  audioMode: AudioMode;
+  originalUrl: string;
+  streamUrl?: string;
+  audioUrl?: string;
+  imageUrl?: string;
+}): string {
+  const query = new URLSearchParams({
+    platformId: params.platformId,
+    videoId: params.videoId,
+    title: params.title,
+    quality: params.quality,
+    audioMode: params.audioMode,
+    url: params.originalUrl,
+    streamUrl: params.streamUrl || '',
+    audioUrl: params.audioUrl || '',
+    imageUrl: params.imageUrl || '',
+  });
+  return `${CLOUD_BACKEND_ORIGIN}/api/download?${query.toString()}`;
+}
+
+/**
+ * Builds the direct Render backend image download endpoint URL (`/api/download-image`).
+ */
+export function buildBackendImageDownloadUrl(imageUrl: string, filename: string): string {
+  return `${CLOUD_BACKEND_ORIGIN}/api/download-image?url=${encodeURIComponent(
+    imageUrl,
+  )}&filename=${encodeURIComponent(filename)}`;
+}
+
+/**
+ * Builds a ResolvedVideo structure from detection + backend extracted stream & photo data.
  */
 export function resolveVideoFromDetection(
   rawInput: string,
@@ -1197,287 +1237,50 @@ export function resolveVideoFromDetection(
 }
 
 /**
- * Client-side real stream & photo extractor that works directly in the browser (including on static GitHub Pages)
- * using CORS-enabled public APIs (TikWM for TikTok/Douyin videos & photo slideshows, FxTwitter for X/Twitter videos & multi-photos,
- * YouTube high-res thumbnails, Dailymotion API, and Noembed).
+ * Resolves a social media URL strictly through the Render Backend (`https://iw1i8-hqo819--y18ej--uqiw78.onrender.com/api/resolve`).
+ * Does NOT perform client-side third-party scraping in the browser.
  */
-export async function extractRealVideoClientSide(rawInput: string): Promise<ResolvedVideo> {
-  const startMs = Date.now();
-  const detection = detectSocialPlatform(rawInput);
-  const targetUrl = detection.normalizedUrl || rawInput.trim();
-  const platformId = detection.platform?.id;
-
-  // 1. TikTok & Douyin via TikWM CORS API (supports both Videos and Photo Slideshow Carousels!)
-  if (platformId === 'tiktok' || platformId === 'douyin') {
-    try {
-      const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(targetUrl)}&hd=1`;
-      const res = await fetch(apiUrl);
-      if (res.ok) {
-        const json = (await res.json()) as {
-          code?: number;
-          data?: {
-            id?: string;
-            title?: string;
-            duration?: number;
-            play?: string;
-            hdplay?: string;
-            wmplay?: string;
-            music?: string;
-            cover?: string;
-            origin_cover?: string;
-            ai_dynamic_cover?: string;
-            images?: string[];
-            size?: number;
-            hd_size?: number;
-            play_count?: number;
-            digg_count?: number;
-            author?: {unique_id?: string; nickname?: string};
-          };
-        };
-        if (json.code === 0 && json.data) {
-          const d = json.data;
-          const images: ExtractedImageItem[] = [];
-          if (Array.isArray(d.images) && d.images.length > 0) {
-            d.images.forEach((imgUrl, idx) => {
-              images.push({
-                id: `${d.id || detection.videoId}-slide-${idx + 1}`,
-                url: imgUrl,
-                label: `Ảnh Slideshow #${idx + 1} (Gốc không logo)`,
-                format: 'JPG',
-              });
-            });
-          }
-          const bestCover = d.origin_cover || d.cover;
-          if (bestCover) {
-            images.push({
-              id: `${d.id || detection.videoId}-cover`,
-              url: bestCover,
-              label: 'Ảnh bìa gốc (Origin Cover HD)',
-              format: 'JPG',
-            });
-          }
-
-          const isPhotoCarousel = Array.isArray(d.images) && d.images.length > 0;
-
-          return resolveVideoFromDetection(rawInput, detection, {
-            title:
-              d.title ||
-              `${detection.platform?.name || 'TikTok'} ${isPhotoCarousel ? 'Album Ảnh' : 'Video'} #${
-                d.id || detection.videoId
-              }`,
-            author_name: d.author?.nickname || d.author?.unique_id,
-            author_handle: d.author?.unique_id ? `@${d.author.unique_id}` : undefined,
-            durationSec: d.duration || (isPhotoCarousel ? 0 : 30),
-            viewCount: d.play_count || 0,
-            likeCount: d.digg_count || 0,
-            thumbnailUrl: images[0]?.url || bestCover,
-            videoStreamUrl: isPhotoCarousel ? undefined : d.play || d.hdplay,
-            hdStreamUrl: isPhotoCarousel ? undefined : d.hdplay || d.play,
-            wmStreamUrl: isPhotoCarousel ? undefined : d.wmplay || d.play,
-            audioStreamUrl: d.music,
-            hdSizeBytes: d.hd_size || d.size,
-            sdSizeBytes: d.size,
-            images,
-            contentTypeOverride: isPhotoCarousel ? 'Photo' : undefined,
-            resolveTimeMs: Date.now() - startMs,
-            resolvedVia: 'real-stream-api',
-          });
-        }
-      }
-    } catch {
-      // Fall through
-    }
-  }
-
-  // 2. X / Twitter via FxTwitter CORS API (supports both Videos and Multi-Photo tweets!)
-  if (platformId === 'twitter' && detection.videoId) {
-    try {
-      const userPart = (detection.creatorHint || 'i').replace(/^@/, '');
-      const fxUrl = `https://api.fxtwitter.com/${userPart}/status/${detection.videoId}`;
-      const res = await fetch(fxUrl);
-      if (res.ok) {
-        const json = (await res.json()) as {
-          tweet?: {
-            text?: string;
-            likes?: number;
-            views?: number;
-            author?: {name?: string; screen_name?: string};
-            media?: {
-              videos?: Array<{
-                url?: string;
-                thumbnail_url?: string;
-                duration?: number;
-                variants?: Array<{bitrate?: number; url?: string; content_type?: string}>;
-              }>;
-              photos?: Array<{
-                url?: string;
-                width?: number;
-                height?: number;
-              }>;
-            };
-          };
-        };
-        const tweet = json.tweet;
-        if (tweet) {
-          const vid = tweet.media?.videos?.[0];
-          const photos = tweet.media?.photos || [];
-          const mp4Variants = (vid?.variants || [])
-            .filter((v) => v.url && (!v.content_type || v.content_type.includes('mp4')))
-            .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-          const bestUrl = mp4Variants[0]?.url || vid?.url;
-          const midUrl = mp4Variants[Math.min(1, mp4Variants.length - 1)]?.url || bestUrl;
-          const lowUrl = mp4Variants[mp4Variants.length - 1]?.url || bestUrl;
-
-          const images: ExtractedImageItem[] = [];
-          photos.forEach((p, idx) => {
-            if (p.url) {
-              images.push({
-                id: `${detection.videoId}-photo-${idx + 1}`,
-                url: p.url,
-                label: `Ảnh X/Twitter #${idx + 1} (${p.width || 1080}×${p.height || 1080})`,
-                width: p.width,
-                height: p.height,
-                format: 'JPG',
-              });
-            }
-          });
-          if (vid?.thumbnail_url) {
-            images.push({
-              id: `${detection.videoId}-thumb`,
-              url: vid.thumbnail_url,
-              label: 'Ảnh bìa Video X/Twitter',
-              format: 'JPG',
-            });
-          }
-
-          return resolveVideoFromDetection(rawInput, detection, {
-            title: tweet.text || `X Post #${detection.videoId}`,
-            author_name: tweet.author?.name,
-            author_handle: tweet.author?.screen_name ? `@${tweet.author.screen_name}` : undefined,
-            durationSec: Math.round(vid?.duration || (photos.length > 0 && !vid ? 0 : 30)),
-            viewCount: tweet.views || 0,
-            likeCount: tweet.likes || 0,
-            thumbnailUrl: vid?.thumbnail_url || images[0]?.url,
-            videoStreamUrl: midUrl,
-            hdStreamUrl: bestUrl,
-            wmStreamUrl: lowUrl,
-            images,
-            contentTypeOverride: photos.length > 0 && !vid ? 'Photo' : undefined,
-            resolveTimeMs: Date.now() - startMs,
-            resolvedVia: 'real-stream-api',
-          });
-        }
-      }
-    } catch {
-      // Fall through
-    }
-  }
-
-  // 3. Dailymotion via public API
-  if (platformId === 'dailymotion' && detection.videoId) {
-    try {
-      const dmRes = await fetch(
-        `https://api.dailymotion.com/video/${detection.videoId}?fields=id,title,duration,thumbnail_1080_url,thumbnail_720_url,url,owner.screenname,views_total`,
-      );
-      if (dmRes.ok) {
-        const dm = (await dmRes.json()) as {
-          title?: string;
-          duration?: number;
-          thumbnail_1080_url?: string;
-          thumbnail_720_url?: string;
-          views_total?: number;
-          'owner.screenname'?: string;
-        };
-        const thumb = dm.thumbnail_1080_url || dm.thumbnail_720_url;
-        const images: ExtractedImageItem[] = thumb
-          ? [
-              {
-                id: `${detection.videoId}-dm-1080`,
-                url: thumb,
-                label: 'Ảnh bìa Dailymotion Full HD (1080p)',
-                format: 'JPG',
-              },
-            ]
-          : [];
-        return resolveVideoFromDetection(rawInput, detection, {
-          title: dm.title,
-          author_name: dm['owner.screenname'],
-          author_handle: dm['owner.screenname'] ? `@${dm['owner.screenname']}` : undefined,
-          durationSec: dm.duration || 60,
-          viewCount: dm.views_total || 0,
-          thumbnailUrl: thumb,
-          images,
-          resolveTimeMs: Date.now() - startMs,
-          resolvedVia: 'oembed-live',
-        });
-      }
-    } catch {
-      // Fall through
-    }
-  }
-
-  // 4. Universal CORS oEmbed (Noembed) + YouTube Multi-Resolution Image Extractor
-  try {
-    const neRes = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(targetUrl)}`);
-    if (neRes.ok) {
-      const ne = (await neRes.json()) as {
-        title?: string;
-        author_name?: string;
-        author_url?: string;
-        thumbnail_url?: string;
-      };
-      const images: ExtractedImageItem[] = [];
-      if (platformId === 'youtube' && detection.videoId) {
-        images.push(
-          {
-            id: `${detection.videoId}-maxres`,
-            url: `https://i.ytimg.com/vi/${detection.videoId}/maxresdefault.jpg`,
-            label: 'Ảnh bìa YouTube MaxRes (1920×1080 JPG)',
-            width: 1920,
-            height: 1080,
-            format: 'JPG',
-          },
-          {
-            id: `${detection.videoId}-hq`,
-            url: `https://i.ytimg.com/vi/${detection.videoId}/hqdefault.jpg`,
-            label: 'Ảnh bìa YouTube HQ (480×360 JPG)',
-            width: 480,
-            height: 360,
-            format: 'JPG',
-          },
-        );
-      } else if (ne.thumbnail_url) {
-        images.push({
-          id: `${detection.videoId || 'media'}-thumb`,
-          url: ne.thumbnail_url,
-          label: `Ảnh gốc / Ảnh bìa (${detection.platform?.name || 'Media'})`,
-          format: 'JPG',
-        });
-      }
-
-      if (ne.title || images.length > 0) {
-        return resolveVideoFromDetection(rawInput, detection, {
-          title: ne.title,
-          author_name: ne.author_name,
-          author_url: ne.author_url,
-          thumbnailUrl: images[0]?.url || ne.thumbnail_url,
-          images,
-          resolveTimeMs: Date.now() - startMs,
-          resolvedVia: 'oembed-live',
-        });
-      }
-    }
-  } catch {
-    // Fall through
-  }
-
-  return resolveVideoFromDetection(rawInput, detection, {
-    resolveTimeMs: Date.now() - startMs,
+export async function resolveVideoViaBackend(rawInput: string): Promise<ResolvedVideo> {
+  const trimmed = rawInput.trim();
+  const postRes = await fetch(`${CLOUD_BACKEND_ORIGIN}/api/resolve`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({input: trimmed}),
   });
+
+  if (postRes.ok) {
+    const data = (await postRes.json()) as {video?: ResolvedVideo};
+    if (data?.video) {
+      return data.video;
+    }
+  }
+
+  // Fallback GET request to Render backend `/api/resolve?url=...`
+  const getRes = await fetch(
+    `${CLOUD_BACKEND_ORIGIN}/api/resolve?url=${encodeURIComponent(trimmed)}`,
+    {method: 'GET'},
+  );
+  if (getRes.ok) {
+    const data = (await getRes.json()) as {video?: ResolvedVideo};
+    if (data?.video) {
+      return data.video;
+    }
+  }
+
+  throw new Error(
+    `Máy chủ Render (${CLOUD_BACKEND_ORIGIN}) chưa phản hồi kết quả phân tích cho đường dẫn này.`,
+  );
 }
 
 /**
- * Live search on real public video APIs (zero hardcoded mock data).
+ * Kept for backwards-compatibility with imports; delegates directly to the Render backend.
+ */
+export async function extractRealVideoClientSide(rawInput: string): Promise<ResolvedVideo> {
+  return resolveVideoViaBackend(rawInput);
+}
+
+/**
+ * Live search routed strictly through the Render backend (`https://iw1i8-hqo819--y18ej--uqiw78.onrender.com/api/...`).
  */
 export async function searchLiveVideos(
   query: string,
@@ -1486,119 +1289,38 @@ export async function searchLiveVideos(
   const q = query.trim();
   if (!q) return [];
 
-  // If the user pasted a direct URL into the search box, resolve it via Render backend first, then fallback to client-side
   const detection = detectSocialPlatform(q);
   if (detection.isUrl && detection.platform) {
-    try {
-      const apiRes = await fetch(`${CLOUD_BACKEND_ORIGIN}/api/resolve`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({input: q}),
-      });
-      if (apiRes.ok) {
-        const data = (await apiRes.json()) as {video?: ResolvedVideo};
-        if (data?.video) {
-          const v = data.video;
-          return [
-            {
-              id: v.id,
-              videoId: v.videoId,
-              platformId: v.platformId,
-              contentType: 'Video',
-              title: v.title,
-              authorName: v.authorName,
-              authorHandle: v.authorHandle,
-              durationSec: v.durationSec,
-              publishedAt: v.publishedAt,
-              viewCount: v.viewCount,
-              url: v.originalUrl,
-              thumbnailUrl: v.thumbnailUrl,
-              videoStreamUrl: v.videoStreamUrl,
-            },
-          ];
-        }
-      }
-    } catch {
-      // Fallback to client-side extractor if backend is waking up
-    }
-
-    const resolved = await extractRealVideoClientSide(q);
+    const v = await resolveVideoViaBackend(q);
     return [
       {
-        id: resolved.id,
-        videoId: resolved.videoId,
-        platformId: resolved.platformId,
+        id: v.id,
+        videoId: v.videoId,
+        platformId: v.platformId,
         contentType: 'Video',
-        title: resolved.title,
-        authorName: resolved.authorName,
-        authorHandle: resolved.authorHandle,
-        durationSec: resolved.durationSec,
-        publishedAt: resolved.publishedAt,
-        viewCount: resolved.viewCount,
-        url: resolved.originalUrl,
-        thumbnailUrl: resolved.thumbnailUrl,
-        videoStreamUrl: resolved.videoStreamUrl,
+        title: v.title,
+        authorName: v.authorName,
+        authorHandle: v.authorHandle,
+        durationSec: v.durationSec,
+        publishedAt: v.publishedAt,
+        viewCount: v.viewCount,
+        url: v.originalUrl,
+        thumbnailUrl: v.thumbnailUrl,
+        videoStreamUrl: v.videoStreamUrl,
       },
     ];
   }
 
-  // Try Render backend /api/search endpoint first
-  try {
-    const backendSearchRes = await fetch(
-      `${CLOUD_BACKEND_ORIGIN}/api/search?q=${encodeURIComponent(q)}&platform=${encodeURIComponent(
-        platformFilter,
-      )}`,
-    );
-    if (backendSearchRes.ok) {
-      const json = (await backendSearchRes.json()) as {results?: LiveSearchVideoItem[]};
-      if (Array.isArray(json.results) && json.results.length > 0) {
-        return json.results;
-      }
+  const backendSearchRes = await fetch(
+    `${CLOUD_BACKEND_ORIGIN}/api/search?q=${encodeURIComponent(q)}&platform=${encodeURIComponent(
+      platformFilter,
+    )}`,
+  );
+  if (backendSearchRes.ok) {
+    const json = (await backendSearchRes.json()) as {results?: LiveSearchVideoItem[]};
+    if (Array.isArray(json.results)) {
+      return json.results;
     }
-  } catch {
-    // Fallback to direct public API search
-  }
-
-  // Live video search via Dailymotion public CORS API
-  try {
-    const dmUrl = `https://api.dailymotion.com/videos?fields=id,title,duration,thumbnail_720_url,url,owner.screenname,views_total&limit=9&search=${encodeURIComponent(
-      q,
-    )}`;
-    const res = await fetch(dmUrl);
-    if (res.ok) {
-      const data = (await res.json()) as {
-        list?: Array<{
-          id: string;
-          title: string;
-          duration: number;
-          thumbnail_720_url?: string;
-          url: string;
-          'owner.screenname'?: string;
-          views_total?: number;
-        }>;
-      };
-      if (Array.isArray(data.list)) {
-        const items: LiveSearchVideoItem[] = data.list.map((v) => ({
-          id: `dm-${v.id}`,
-          videoId: v.id,
-          platformId: 'dailymotion',
-          contentType: 'Video',
-          title: v.title,
-          authorName: v['owner.screenname'] || 'Creator',
-          authorHandle: `@${v['owner.screenname'] || 'creator'}`,
-          durationSec: v.duration || 60,
-          publishedAt: 'Trực tiếp',
-          viewCount: v.views_total || 0,
-          url: v.url || `https://www.dailymotion.com/video/${v.id}`,
-          thumbnailUrl: v.thumbnail_720_url,
-        }));
-        if (platformFilter === 'all' || platformFilter === 'dailymotion') {
-          return items;
-        }
-      }
-    }
-  } catch {
-    // Ignore network error
   }
 
   return [];

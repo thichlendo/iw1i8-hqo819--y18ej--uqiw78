@@ -31,6 +31,7 @@ interface VideoPreviewPlayerProps {
 
 function buildProxyUrl(rawUrl: string | undefined): string | undefined {
   if (!rawUrl) return undefined;
+  if (rawUrl.startsWith(CLOUD_BACKEND_ORIGIN)) return rawUrl;
   return `${CLOUD_BACKEND_ORIGIN}/api/stream-proxy?url=${encodeURIComponent(rawUrl)}`;
 }
 
@@ -44,6 +45,21 @@ function shouldProxyImage(rawUrl: string | undefined): boolean {
     lower.includes('instagram.com') ||
     lower.includes('facebook.com')
   );
+}
+
+function buildPlatformEmbedIframeUrl(video: ResolvedVideo): string | null {
+  if (video.platformId === 'youtube' && video.videoId && video.videoId !== 'youtube-video') {
+    return `https://www.youtube.com/embed/${encodeURIComponent(video.videoId)}?rel=0&modestbranding=1`;
+  }
+  if (video.platformId === 'instagram' && video.videoId && video.videoId !== 'ig-media') {
+    return `https://www.instagram.com/p/${encodeURIComponent(video.videoId)}/embed/`;
+  }
+  if (video.platformId === 'facebook' && video.originalUrl) {
+    return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(
+      video.originalUrl,
+    )}&show_text=false`;
+  }
+  return null;
 }
 
 export const VideoPreviewPlayer: React.FC<VideoPreviewPlayerProps> = ({
@@ -71,8 +87,13 @@ export const VideoPreviewPlayer: React.FC<VideoPreviewPlayerProps> = ({
       ? video.hdStreamUrl || video.videoStreamUrl
       : video.videoStreamUrl || video.hdStreamUrl;
 
-  const playableSrc = rawStreamUrl || undefined;
+  // Route Meta/Instagram/Facebook raw CDN video streams through Render /api/stream-proxy so CORP never blocks playback
+  const playableSrc =
+    rawStreamUrl && shouldProxyImage(rawStreamUrl)
+      ? buildProxyUrl(rawStreamUrl)
+      : rawStreamUrl || undefined;
   const proxyStreamUrl = buildProxyUrl(rawStreamUrl);
+  const embedIframeUrl = buildPlatformEmbedIframeUrl(video);
 
   const images = video.images || [];
   const safeImgIndex =
@@ -156,6 +177,16 @@ export const VideoPreviewPlayer: React.FC<VideoPreviewPlayerProps> = ({
             }}
             className="h-full w-full object-contain bg-black"
           />
+        ) : !isImageMode && embedIframeUrl ? (
+          <iframe
+            key={embedIframeUrl}
+            src={embedIframeUrl}
+            title={video.title}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+            data-testid="platform-embed-player"
+            className="h-full w-full border-0 bg-black"
+          />
         ) : displayImgUrl && !imgError ? (
           <div className="relative h-full w-full flex items-center justify-center bg-black">
             <img
@@ -218,7 +249,7 @@ export const VideoPreviewPlayer: React.FC<VideoPreviewPlayerProps> = ({
             {!isImageMode && !playableSrc && (
               <div className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/90 px-3.5 py-2 text-xs">
                 <span className="font-mono text-slate-300">
-                  Đã trích xuất ảnh gốc độ phân giải cao từ {video.platformName}
+                  Đã trích xuất từ máy chủ Render ({video.platformName})
                 </span>
                 <a
                   href={video.directPlatformUrl}

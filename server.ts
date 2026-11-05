@@ -9,8 +9,6 @@ import {createServer as createViteServer} from 'vite';
 import {
   detectSocialPlatform,
   resolveVideoFromDetection,
-  extractRealVideoClientSide,
-  searchLiveVideos,
   buildDownloadFilename,
   STANDARD_QUALITIES,
   type PlatformId,
@@ -102,7 +100,6 @@ async function resolveRedirectFast(inputUrl: string): Promise<string> {
     });
 
     if (res.url && /^https?:\/\//i.test(res.url)) {
-      // Cancel body download immediately since we only need the final redirected URL
       try {
         await res.body?.cancel();
       } catch {}
@@ -154,11 +151,10 @@ async function extractMetaFast(
     if (!url) return;
     const clean = decodeEscapedMetaString(url);
     if (!/^https?:\/\//i.test(clean)) return;
-    // Skip tiny 1x1 tracking pixels or static UI sprites
     if (
       clean.includes('rsrc.php') ||
       clean.includes('static.xx.fbcdn.net') ||
-      clean.includes(' static.cdninstagram.com') ||
+      clean.includes('static.cdninstagram.com') ||
       clean.includes('/s150x150/') ||
       clean.includes('/p50x50/') ||
       clean.includes('emoji')
@@ -222,7 +218,9 @@ async function extractMetaFast(
     }
 
     // Check video_versions array (Instagram & Threads)
-    const videoVersionsMatch = html.match(/"video_versions"\s*:\s*\[\s*\{[^}]*"url"\s*:\s*"([^"]+)"/i);
+    const videoVersionsMatch = html.match(
+      /"video_versions"\s*:\s*\[\s*\{[^}]*"url"\s*:\s*"([^"]+)"/i,
+    );
     if (videoVersionsMatch?.[1]) {
       const vUrl = decodeEscapedMetaString(videoVersionsMatch[1]);
       if (/^https?:\/\//i.test(vUrl)) {
@@ -249,7 +247,7 @@ async function extractMetaFast(
       }
     }
 
-    // 3. Extract multi-photo & single-photo URLs (display_url, image_versions2, EmbeddedMediaImage, og:image)
+    // 3. Extract multi-photo & single-photo URLs
     const displayUrlMatches = html.matchAll(/"display_url"\s*:\s*"([^"]+)"/gi);
     let idx = 1;
     for (const m of displayUrlMatches) {
@@ -258,7 +256,6 @@ async function extractMetaFast(
       }
     }
 
-    // Instagram Embed Image tag (<img class="EmbeddedMediaImage" src="...">)
     const embedImgMatches = html.matchAll(
       /<img[^>]+class=["'][^"']*EmbeddedMediaImage[^"']*["'][^>]+src=["']([^"']+)["']/gi,
     );
@@ -268,7 +265,6 @@ async function extractMetaFast(
       }
     }
 
-    // Scaled / high-res srcset from Instagram / Facebook embed
     const srcsetMatches = html.matchAll(/srcset=["']([^"']+)["']/gi);
     for (const m of srcsetMatches) {
       const parts = m[1]
@@ -281,7 +277,6 @@ async function extractMetaFast(
       }
     }
 
-    // Relay image_versions2 candidates (Threads / Instagram / Facebook)
     const candidateMatches = html.matchAll(
       /"candidates"\s*:\s*\[\s*\{\s*(?:"width"\s*:\s*(\d+)\s*,\s*"height"\s*:\s*(\d+)\s*,\s*)?"url"\s*:\s*"([^"]+)"/gi,
     );
@@ -293,7 +288,6 @@ async function extractMetaFast(
       }
     }
 
-    // Facebook high-res photo URI patterns
     const fbPhotoPatterns = [
       /"image"\s*:\s*\{\s*"uri"\s*:\s*"([^"]+)"/gi,
       /"photo_image"\s*:\s*\{\s*"uri"\s*:\s*"([^"]+)"/gi,
@@ -308,7 +302,6 @@ async function extractMetaFast(
       }
     }
 
-    // OpenGraph & Twitter image tags
     const ogImgPatterns = [
       /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
       /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
@@ -352,10 +345,8 @@ async function extractMetaFast(
     }
   };
 
-  // Run parallel probes for maximum speed (<800ms total)
   const tasks: Array<Promise<void>> = [];
 
-  // Probe 1: Facebook Video Plugin (works without login for public FB Watch, Reels, and Videos!)
   if (platformId === 'facebook') {
     tasks.push(
       (async () => {
@@ -381,7 +372,6 @@ async function extractMetaFast(
     );
   }
 
-  // Probe 2: Instagram Captioned Embed (works without login for IG Reels, Posts, Carousels!)
   if (platformId === 'instagram' && videoId && videoId !== 'ig-media') {
     tasks.push(
       (async () => {
@@ -404,7 +394,6 @@ async function extractMetaFast(
     );
   }
 
-  // Probe 3: Meta ExternalHit Crawler OpenGraph & JSON fetch (works for Facebook Photos, Reels, Instagram, and Threads!)
   tasks.push(
     (async () => {
       try {
@@ -448,8 +437,454 @@ async function extractMetaFast(
     sdStreamUrl: sdStreamUrl || hdStreamUrl,
     thumbnailUrl: images[0]?.url || thumbnailUrl,
     images,
-    isPhotoOnly: !hdStreamUrl && !sdStreamUrl && images.length > 0,
+    isPhotoOnly: !hdStreamUrl && !sdStreamUrl && images.length > 0 && detection.contentType === 'Photo',
   };
+}
+
+/**
+ * Server-side extractor for TikTok, Douyin, X/Twitter, Dailymotion, YouTube oEmbed & thumbnails.
+ * Runs exclusively on the backend so the browser never makes direct third-party API calls.
+ */
+async function extractPlatformStreamsServerSide(rawInput: string): Promise<ResolvedVideo> {
+  const startMs = Date.now();
+  const detection = detectSocialPlatform(rawInput);
+  const targetUrl = detection.normalizedUrl || rawInput.trim();
+  const platformId = detection.platform?.id || 'youtube';
+
+  // 1. TikTok & Douyin (Videos + Multi-Photo Slideshows via TikWM API)
+  if (platformId === 'tiktok' || platformId === 'douyin') {
+    try {
+      const apiRes = await fetch(
+        `https://www.tikwm.com/api/?url=${encodeURIComponent(targetUrl)}&hd=1`,
+        {signal: AbortSignal.timeout(5500)},
+      );
+      if (apiRes.ok) {
+        const payload = await apiRes.json();
+        if (payload && payload.code === 0 && payload.data) {
+          const d = payload.data;
+          const hdUrl = d.hdplay || d.play;
+          const playUrl = d.play || d.hdplay;
+          const musicUrl = d.music || d.music_info?.play;
+          const durationSec = Number(d.duration) || 30;
+          const isPhotoCarousel = Array.isArray(d.images) && d.images.length > 0;
+
+          const images: ExtractedImageItem[] = isPhotoCarousel
+            ? d.images.map((imgUrl: string, idx: number) => ({
+                id: `${d.id || 'tt'}-slide-${idx + 1}`,
+                url: imgUrl,
+                label: `Ảnh Slide #${idx + 1} (Full HD gốc)`,
+                width: 1080,
+                height: 1920,
+                format: 'JPG' as const,
+              }))
+            : d.origin_cover || d.cover
+              ? [
+                  {
+                    id: `${d.id || 'tt'}-cover`,
+                    url: d.origin_cover || d.cover,
+                    label: 'Ảnh bìa gốc độ phân giải cao (Original Cover)',
+                    width: 1080,
+                    height: 1920,
+                    format: 'JPG' as const,
+                  },
+                ]
+              : [];
+
+          const qualities: QualityOption[] = [
+            {
+              ...STANDARD_QUALITIES[2],
+              label: '1080p Full HD (Không logo)',
+              directStreamUrl: hdUrl,
+              realSizeBytes: Number(d.hd_size) || Number(d.size) || undefined,
+            },
+            {
+              ...STANDARD_QUALITIES[3],
+              label: '720p HD (Tốc độ cao)',
+              directStreamUrl: playUrl,
+              realSizeBytes: Number(d.size) || undefined,
+            },
+            {
+              ...STANDARD_QUALITIES[4],
+              directStreamUrl: d.wmplay || playUrl,
+              realSizeBytes: Number(d.wm_size) || undefined,
+            },
+          ];
+
+          return resolveVideoFromDetection(rawInput, detection, {
+            title: d.title || `Video ${detection.platform?.name || 'TikTok'} #${d.id}`,
+            author_name: d.author?.nickname || 'TikTok Creator',
+            author_handle: d.author?.unique_id ? `@${d.author.unique_id}` : '@tiktok',
+            thumbnailUrl: d.origin_cover || d.cover || images[0]?.url,
+            durationSec,
+            viewCount: Number(d.play_count) || 0,
+            likeCount: Number(d.digg_count) || 0,
+            videoStreamUrl: isPhotoCarousel ? undefined : playUrl,
+            hdStreamUrl: isPhotoCarousel ? undefined : hdUrl,
+            audioStreamUrl: musicUrl,
+            images,
+            contentTypeOverride: isPhotoCarousel ? 'Photo' : undefined,
+            qualities,
+            resolveTimeMs: Date.now() - startMs,
+            resolvedVia: 'tikwm-live',
+          });
+        }
+      }
+    } catch {
+      // Fall through
+    }
+  }
+
+  // 2. X (Twitter) Videos & Multi-Photo Posts via FxTwitter API
+  if (platformId === 'twitter' && detection.videoId) {
+    try {
+      const fxRes = await fetch(`https://api.fxtwitter.com/status/${detection.videoId}`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (fxRes.ok) {
+        const fxData = await fxRes.json();
+        const tweet = fxData?.tweet;
+        if (tweet) {
+          const videos = tweet.media?.videos || [];
+          const photos = tweet.media?.photos || [];
+          const allMedia = tweet.media?.all || [];
+          const v = videos[0] || allMedia.find((m: {type?: string}) => m.type === 'video' || m.type === 'gif');
+
+          const extractedImages: ExtractedImageItem[] = photos.map(
+            (p: {url: string; width?: number; height?: number}, idx: number) => ({
+              id: `${tweet.id || 'x'}-photo-${idx + 1}`,
+              url: p.url,
+              label: `Ảnh gốc X/Twitter #${idx + 1} (${p.width || 1080}×${p.height || 1080})`,
+              width: p.width || 1080,
+              height: p.height || 1080,
+              format: 'JPG' as const,
+            }),
+          );
+
+          if (v?.thumbnail_url && extractedImages.length === 0) {
+            extractedImages.push({
+              id: `${tweet.id || 'x'}-thumb`,
+              url: v.thumbnail_url,
+              label: 'Ảnh bìa gốc X/Twitter (HD)',
+              width: v.width || 1280,
+              height: v.height || 720,
+              format: 'JPG',
+            });
+          }
+
+          if (v && v.url) {
+            const variants: Array<{bitrate?: number; url: string}> = Array.isArray(v.variants)
+              ? v.variants.filter((x: {url?: string}) => x.url && x.url.includes('.mp4'))
+              : [{url: v.url}];
+            variants.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+            const bestUrl = variants[0]?.url || v.url;
+            const midUrl = variants[Math.min(1, variants.length - 1)]?.url || bestUrl;
+            const lowUrl = variants[variants.length - 1]?.url || bestUrl;
+
+            const qualities: QualityOption[] = [
+              {...STANDARD_QUALITIES[2], directStreamUrl: bestUrl},
+              {...STANDARD_QUALITIES[3], directStreamUrl: midUrl},
+              {...STANDARD_QUALITIES[4], directStreamUrl: lowUrl},
+            ];
+
+            return resolveVideoFromDetection(rawInput, detection, {
+              title: tweet.text || `Video trên X (@${tweet.author?.screen_name || 'x'})`,
+              author_name: tweet.author?.name || 'X Creator',
+              author_handle: tweet.author?.screen_name ? `@${tweet.author.screen_name}` : '@x',
+              thumbnailUrl: v.thumbnail_url || tweet.author?.avatar_url,
+              durationSec: Math.max(1, Math.round(Number(v.duration) || 30)),
+              viewCount: Number(tweet.views) || 0,
+              likeCount: Number(tweet.likes) || 0,
+              videoStreamUrl: bestUrl,
+              hdStreamUrl: bestUrl,
+              audioStreamUrl: bestUrl,
+              images: extractedImages,
+              qualities,
+              resolveTimeMs: Date.now() - startMs,
+              resolvedVia: 'fxtwitter-live',
+            });
+          } else if (extractedImages.length > 0) {
+            return resolveVideoFromDetection(rawInput, detection, {
+              title: tweet.text || `Bài đăng ảnh trên X (@${tweet.author?.screen_name || 'x'})`,
+              author_name: tweet.author?.name || 'X Creator',
+              author_handle: tweet.author?.screen_name ? `@${tweet.author.screen_name}` : '@x',
+              thumbnailUrl: extractedImages[0].url,
+              viewCount: Number(tweet.views) || 0,
+              likeCount: Number(tweet.likes) || 0,
+              images: extractedImages,
+              contentTypeOverride: 'Photo',
+              resolveTimeMs: Date.now() - startMs,
+              resolvedVia: 'fxtwitter-live',
+            });
+          }
+        }
+      }
+    } catch {
+      // Fall through
+    }
+  }
+
+  // 3. Dailymotion Public API
+  if (platformId === 'dailymotion' && detection.videoId) {
+    try {
+      const dmRes = await fetch(
+        `https://api.dailymotion.com/video/${detection.videoId}?fields=id,title,duration,views_total,Likes_total,thumbnail_1080_url,thumbnail_720_url,owner.screenname,owner.username,url`,
+        {signal: AbortSignal.timeout(4500)},
+      );
+      let directMp4Url = '';
+      try {
+        const metaRes = await fetch(
+          `https://www.dailymotion.com/player/metadata/video/${detection.videoId}`,
+          {signal: AbortSignal.timeout(4500)},
+        );
+        if (metaRes.ok) {
+          const metaJson = await metaRes.json();
+          const autoQualities = metaJson?.qualities?.auto || [];
+          const mp4Qualities =
+            metaJson?.qualities?.['1080'] ||
+            metaJson?.qualities?.['720'] ||
+            metaJson?.qualities?.['480'] ||
+            [];
+          const foundMp4 = [...mp4Qualities, ...autoQualities].find(
+            (q: {type?: string; url?: string}) => q.type?.includes('mp4') && q.url,
+          );
+          if (foundMp4?.url) {
+            directMp4Url = foundMp4.url;
+          }
+        }
+      } catch {
+        // Ignore
+      }
+
+      if (dmRes.ok) {
+        const dm = await dmRes.json();
+        const thumb = dm.thumbnail_1080_url || dm.thumbnail_720_url;
+        return resolveVideoFromDetection(rawInput, detection, {
+          title: dm.title,
+          author_name: dm['owner.screenname'] || 'Dailymotion Creator',
+          author_handle: dm['owner.username'] ? `@${dm['owner.username']}` : '@dailymotion',
+          thumbnailUrl: thumb,
+          durationSec: Number(dm.duration) || 60,
+          viewCount: Number(dm.views_total) || 0,
+          likeCount: Number(dm.likes_total) || 0,
+          videoStreamUrl: directMp4Url || undefined,
+          hdStreamUrl: directMp4Url || undefined,
+          images: thumb
+            ? [
+                {
+                  id: `${detection.videoId}-dm-thumb`,
+                  url: thumb,
+                  label: 'Ảnh bìa gốc Dailymotion (1080p Full HD)',
+                  width: 1920,
+                  height: 1080,
+                  format: 'JPG',
+                },
+              ]
+            : [],
+          resolveTimeMs: Date.now() - startMs,
+          resolvedVia: 'dailymotion-live',
+        });
+      }
+    } catch {
+      // Fall through
+    }
+  }
+
+  // 4. Universal oEmbed Metadata + High-Res Images (YouTube, Vimeo, SoundCloud, Reddit, etc.)
+  try {
+    const noembedRes = await fetch(
+      `https://noembed.com/embed?url=${encodeURIComponent(targetUrl)}`,
+      {signal: AbortSignal.timeout(4000)},
+    );
+    if (noembedRes.ok) {
+      const oembed = await noembedRes.json();
+      if (oembed && !oembed.error && (oembed.title || oembed.author_name || oembed.thumbnail_url)) {
+        const extraImages: ExtractedImageItem[] = [];
+        if (platformId === 'youtube' && detection.videoId) {
+          extraImages.push(
+            {
+              id: `${detection.videoId}-yt-maxres`,
+              url: `https://i.ytimg.com/vi/${detection.videoId}/maxresdefault.jpg`,
+              label: 'Ảnh bìa gốc YouTube MaxRes (1920×1080 Full HD)',
+              width: 1920,
+              height: 1080,
+              format: 'JPG',
+            },
+            {
+              id: `${detection.videoId}-yt-hq`,
+              url: `https://i.ytimg.com/vi/${detection.videoId}/hqdefault.jpg`,
+              label: 'Ảnh bìa YouTube HQ (480×360)',
+              width: 480,
+              height: 360,
+              format: 'JPG',
+            },
+          );
+        } else if (oembed.thumbnail_url) {
+          extraImages.push({
+            id: `${detection.videoId || 'media'}-oembed-thumb`,
+            url: oembed.thumbnail_url,
+            label: `Ảnh gốc / Ảnh bìa ${detection.platform?.name || 'Media'}`,
+            width: 1280,
+            height: 720,
+            format: 'JPG',
+          });
+        }
+
+        return resolveVideoFromDetection(rawInput, detection, {
+          title: oembed.title,
+          author_name: oembed.author_name,
+          thumbnailUrl: extraImages[0]?.url || oembed.thumbnail_url,
+          images: extraImages,
+          resolveTimeMs: Date.now() - startMs,
+          resolvedVia: 'oembed-live',
+        });
+      }
+    }
+  } catch {
+    // Fall through
+  }
+
+  return resolveVideoFromDetection(rawInput, detection, {
+    resolveTimeMs: Date.now() - startMs,
+    resolvedVia: 'direct-metadata',
+  });
+}
+
+/**
+ * Server-side live video search across TikTok (TikWM) and Dailymotion.
+ */
+async function searchVideosServerSide(
+  rawQuery: string,
+  platformFilter: PlatformId | 'all' = 'all',
+): Promise<ResolvedVideo[]> {
+  const q = rawQuery.trim();
+  if (!q) return [];
+
+  const maybeDetection = detectSocialPlatform(q);
+  if (maybeDetection.isUrl) {
+    const single = await extractPlatformStreamsServerSide(q);
+    return [single];
+  }
+
+  const results: ResolvedVideo[] = [];
+  const tasks: Array<Promise<void>> = [];
+
+  if (platformFilter === 'all' || platformFilter === 'tiktok' || platformFilter === 'douyin') {
+    tasks.push(
+      (async () => {
+        try {
+          const res = await fetch(
+            `https://www.tikwm.com/api/feed/search?keywords=${encodeURIComponent(q)}&count=8`,
+            {signal: AbortSignal.timeout(5500)},
+          );
+          if (!res.ok) return;
+          const json = await res.json();
+          const videos = json?.data?.videos;
+          if (!Array.isArray(videos)) return;
+
+          for (const v of videos) {
+            const vidId = String(v.video_id || v.id || '');
+            const authorId = v.author?.unique_id || 'tiktok';
+            const canonicalUrl = `https://www.tiktok.com/@${authorId}/video/${vidId}`;
+            const det = detectSocialPlatform(canonicalUrl);
+            const hdUrl = v.hdplay || v.play;
+            const playUrl = v.play || v.hdplay;
+            const coverImg = v.origin_cover || v.cover;
+
+            results.push(
+              resolveVideoFromDetection(canonicalUrl, det, {
+                title: v.title || `Video TikTok #${vidId}`,
+                author_name: v.author?.nickname || authorId,
+                author_handle: `@${authorId}`,
+                thumbnailUrl: coverImg,
+                durationSec: Number(v.duration) || 30,
+                viewCount: Number(v.play_count) || 0,
+                likeCount: Number(v.digg_count) || 0,
+                videoStreamUrl: playUrl,
+                hdStreamUrl: hdUrl,
+                audioStreamUrl: v.music || v.music_info?.play,
+                images: coverImg
+                  ? [
+                      {
+                        id: `${vidId}-cover`,
+                        url: coverImg,
+                        label: 'Ảnh bìa gốc TikTok',
+                        width: 1080,
+                        height: 1920,
+                        format: 'JPG',
+                      },
+                    ]
+                  : [],
+                qualities: [
+                  {...STANDARD_QUALITIES[2], directStreamUrl: hdUrl},
+                  {...STANDARD_QUALITIES[3], directStreamUrl: playUrl},
+                  {...STANDARD_QUALITIES[4], directStreamUrl: v.wmplay || playUrl},
+                ],
+                resolvedVia: 'tikwm-live',
+              }),
+            );
+          }
+        } catch {
+          // Ignore
+        }
+      })(),
+    );
+  }
+
+  if (platformFilter === 'all' || platformFilter === 'dailymotion' || platformFilter === 'youtube') {
+    tasks.push(
+      (async () => {
+        try {
+          const res = await fetch(
+            `https://api.dailymotion.com/videos?search=${encodeURIComponent(
+              q,
+            )}&fields=id,title,duration,views_total,likes_total,thumbnail_720_url,owner.screenname,owner.username,url&limit=6`,
+            {signal: AbortSignal.timeout(5000)},
+          );
+          if (!res.ok) return;
+          const json = await res.json();
+          const list = json?.list;
+          if (!Array.isArray(list)) return;
+
+          for (const item of list) {
+            const url = item.url || `https://www.dailymotion.com/video/${item.id}`;
+            const det = detectSocialPlatform(url);
+            results.push(
+              resolveVideoFromDetection(url, det, {
+                title: item.title,
+                author_name: item['owner.screenname'] || 'Dailymotion',
+                author_handle: item['owner.username']
+                  ? `@${item['owner.username']}`
+                  : '@dailymotion',
+                thumbnailUrl: item.thumbnail_720_url,
+                durationSec: Number(item.duration) || 60,
+                viewCount: Number(item.views_total) || 0,
+                likeCount: Number(item.likes_total) || 0,
+                images: item.thumbnail_720_url
+                  ? [
+                      {
+                        id: `${item.id}-thumb`,
+                        url: item.thumbnail_720_url,
+                        label: 'Ảnh bìa Dailymotion HD',
+                        width: 1280,
+                        height: 720,
+                        format: 'JPG',
+                      },
+                    ]
+                  : [],
+                resolvedVia: 'dailymotion-live',
+              }),
+            );
+          }
+        } catch {
+          // Ignore
+        }
+      })(),
+    );
+  }
+
+  await Promise.allSettled(tasks);
+  return results;
 }
 
 /**
@@ -496,8 +931,12 @@ async function extractUniversalOpenGraphFast(
     }
 
     const ogVideoMatch =
-      html.match(/<meta[^>]+property=["']og:video(?::secure_url|:url)?["'][^>]+content=["']([^"']+)["']/i) ||
-      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:video(?::secure_url|:url)?["']/i);
+      html.match(
+        /<meta[^>]+property=["']og:video(?::secure_url|:url)?["'][^>]+content=["']([^"']+)["']/i,
+      ) ||
+      html.match(
+        /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:video(?::secure_url|:url)?["']/i,
+      );
     const videoStreamUrl = ogVideoMatch?.[1]
       ? decodeEscapedMetaString(ogVideoMatch[1])
       : undefined;
@@ -566,7 +1005,7 @@ interface YtDlpInfo {
   formats?: YtDlpFormat[];
 }
 
-async function extractViaYtDlp(targetUrl: string, timeoutMs = 6500): Promise<YtDlpInfo | null> {
+async function extractViaYtDlp(targetUrl: string, timeoutMs = 7000): Promise<YtDlpInfo | null> {
   const ready = await ensureYtDlpBinary();
   if (!ready) return null;
 
@@ -574,6 +1013,8 @@ async function extractViaYtDlp(targetUrl: string, timeoutMs = 6500): Promise<YtD
     const {stdout} = await execFileAsync(
       YT_DLP_PATH,
       [
+        '--js-runtimes',
+        'node',
         '--dump-single-json',
         '--no-warnings',
         '--no-playlist',
@@ -698,6 +1139,191 @@ async function generateValidPlayableMp4WithFfmpeg(
   );
 }
 
+async function handleResolveRequest(rawInput: string): Promise<{
+  detection: DetectionResult;
+  video: ResolvedVideo;
+}> {
+  const startMs = Date.now();
+
+  const cached = RESOLVE_CACHE.get(rawInput);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return {
+      detection: cached.detection,
+      video: {
+        ...cached.video,
+        resolveTimeMs: Math.max(1, Date.now() - startMs),
+      },
+    };
+  }
+
+  let effectiveUrl = rawInput;
+  const initialDetection = detectSocialPlatform(rawInput);
+  if (initialDetection.isUrl) {
+    const redirectedUrl = await resolveRedirectFast(initialDetection.normalizedUrl || rawInput);
+    if (redirectedUrl && redirectedUrl !== rawInput) {
+      effectiveUrl = redirectedUrl;
+    }
+  }
+
+  const detection = detectSocialPlatform(effectiveUrl);
+
+  // Step 2: Dedicated Meta Engine (Facebook, Instagram, Threads) + optional yt-dlp fallback for Instagram Reels
+  if (detection.isMetaPlatform) {
+    const metaResult = await extractMetaFast(detection.normalizedUrl || effectiveUrl, detection);
+    let hdStream = metaResult?.hdStreamUrl || metaResult?.sdStreamUrl;
+    let sdStream = metaResult?.sdStreamUrl || metaResult?.hdStreamUrl;
+    let audioStream: string | undefined;
+
+    // If Meta HTML didn't expose a direct MP4 stream (e.g. some IG Reels), also probe yt-dlp briefly
+    if (!hdStream && !metaResult?.isPhotoOnly) {
+      const ytdlpMeta = await extractViaYtDlp(detection.normalizedUrl || effectiveUrl, 5000);
+      if (ytdlpMeta) {
+        const mp4Formats = (ytdlpMeta.formats || [])
+          .filter((f) => f.url && !f.url.includes('.m3u8') && f.ext === 'mp4')
+          .sort((a, b) => (b.height || 0) - (a.height || 0));
+        hdStream = mp4Formats[0]?.url || ytdlpMeta.url;
+        sdStream = mp4Formats[mp4Formats.length - 1]?.url || hdStream;
+      }
+    }
+
+    const video = resolveVideoFromDetection(effectiveUrl, detection, {
+      title: metaResult?.title,
+      author_name: metaResult?.authorName,
+      author_handle: metaResult?.authorHandle,
+      thumbnailUrl: metaResult?.thumbnailUrl,
+      videoStreamUrl: sdStream || hdStream,
+      hdStreamUrl: hdStream || sdStream,
+      audioStreamUrl: audioStream,
+      images: metaResult?.images || [],
+      contentTypeOverride: metaResult?.isPhotoOnly ? 'Photo' : undefined,
+      resolveTimeMs: Date.now() - startMs,
+      resolvedVia: 'meta-fast-engine',
+    });
+
+    RESOLVE_CACHE.set(rawInput, {timestamp: Date.now(), detection, video});
+    return {detection, video};
+  }
+
+  // Step 3: Server-side platform extractors (TikWM, FxTwitter, Dailymotion, Noembed)
+  const fastResolved = await extractPlatformStreamsServerSide(effectiveUrl);
+  if (
+    fastResolved.videoStreamUrl ||
+    (fastResolved.contentType === 'Photo' && fastResolved.images.length > 0)
+  ) {
+    const video: ResolvedVideo = {
+      ...fastResolved,
+      resolveTimeMs: Date.now() - startMs,
+    };
+    RESOLVE_CACHE.set(rawInput, {timestamp: Date.now(), detection, video});
+    return {detection, video};
+  }
+
+  // Step 4: Race Universal OpenGraph + yt-dlp for YouTube, Reddit, Pinterest, Vimeo, Bilibili, etc.
+  if (detection.isUrl) {
+    const [ogResult, ytdlpInfo] = await Promise.all([
+      extractUniversalOpenGraphFast(detection.normalizedUrl || effectiveUrl, detection),
+      extractViaYtDlp(detection.normalizedUrl || effectiveUrl, 6500),
+    ]);
+
+    if (ytdlpInfo) {
+      const formats = (ytdlpInfo.formats || []).filter(
+        (f) => f.url && !f.url.includes('.m3u8') && f.ext === 'mp4',
+      );
+      const muxedFormats = formats
+        .filter((f) => f.vcodec && f.vcodec !== 'none' && f.acodec && f.acodec !== 'none')
+        .sort((a, b) => (b.height || 0) - (a.height || 0));
+      const videoFormats = formats
+        .filter((f) => f.vcodec && f.vcodec !== 'none')
+        .sort((a, b) => (b.height || 0) - (a.height || 0));
+      const audioFormats = (ytdlpInfo.formats || [])
+        .filter(
+          (f) => f.url && f.acodec && f.acodec !== 'none' && (!f.vcodec || f.vcodec === 'none'),
+        )
+        .sort((a, b) => (b.tbr || 0) - (a.tbr || 0));
+
+      const bestStream = muxedFormats[0]?.url || videoFormats[0]?.url || ytdlpInfo.url;
+      const sdStream = muxedFormats[muxedFormats.length - 1]?.url || bestStream;
+      const bestAudio = audioFormats[0]?.url || bestStream;
+
+      const mappedQualities: QualityOption[] = STANDARD_QUALITIES.slice(2).map((q) => {
+        const targetHeight = Number.parseInt(q.id, 10) || 720;
+        const matched =
+          muxedFormats.find((f) => f.height && Math.abs(f.height - targetHeight) <= 120) ||
+          videoFormats.find((f) => f.height && Math.abs(f.height - targetHeight) <= 120) ||
+          muxedFormats[0] ||
+          videoFormats[0];
+        return {
+          ...q,
+          directStreamUrl: matched?.url || bestStream,
+          realSizeBytes: matched?.filesize || matched?.filesize_approx,
+        };
+      });
+
+      const images: ExtractedImageItem[] = [...(ogResult?.images || []), ...fastResolved.images];
+      if (ytdlpInfo.thumbnail && !images.some((i) => i.url === ytdlpInfo.thumbnail)) {
+        images.unshift({
+          id: `${detection.videoId || 'media'}-ytdlp-thumb`,
+          url: ytdlpInfo.thumbnail,
+          label: `Ảnh gốc / Ảnh bìa độ phân giải cao (${detection.platform?.name || 'Media'})`,
+          format: 'JPG',
+        });
+      }
+
+      const video = resolveVideoFromDetection(effectiveUrl, detection, {
+        title: ytdlpInfo.title || ogResult?.title || fastResolved.title,
+        author_name: ytdlpInfo.uploader || fastResolved.authorName,
+        author_handle: ytdlpInfo.uploader_id
+          ? `@${ytdlpInfo.uploader_id.replace(/^@/, '')}`
+          : fastResolved.authorHandle,
+        durationSec: Math.round(ytdlpInfo.duration || fastResolved.durationSec || 30),
+        viewCount: ytdlpInfo.view_count || fastResolved.viewCount,
+        likeCount: ytdlpInfo.like_count || fastResolved.likeCount,
+        thumbnailUrl: ytdlpInfo.thumbnail || ogResult?.thumbnailUrl || fastResolved.thumbnailUrl,
+        videoStreamUrl: sdStream || bestStream || ogResult?.videoStreamUrl,
+        hdStreamUrl: bestStream || ogResult?.videoStreamUrl,
+        audioStreamUrl: bestAudio,
+        images,
+        qualities: mappedQualities,
+        resolveTimeMs: Date.now() - startMs,
+        resolvedVia: 'yt-dlp-live',
+      });
+
+      RESOLVE_CACHE.set(rawInput, {timestamp: Date.now(), detection, video});
+      return {detection, video};
+    }
+
+    if (ogResult && (ogResult.images.length > 0 || ogResult.videoStreamUrl || ogResult.title)) {
+      const mergedImages = ogResult.images.length > 0 ? ogResult.images : fastResolved.images;
+      const video = resolveVideoFromDetection(effectiveUrl, detection, {
+        title: ogResult.title || fastResolved.title,
+        author_name: fastResolved.authorName,
+        author_handle: fastResolved.authorHandle,
+        thumbnailUrl: ogResult.thumbnailUrl || fastResolved.thumbnailUrl,
+        videoStreamUrl: ogResult.videoStreamUrl || fastResolved.videoStreamUrl,
+        hdStreamUrl: ogResult.videoStreamUrl || fastResolved.hdStreamUrl,
+        images: mergedImages,
+        contentTypeOverride:
+          !ogResult.videoStreamUrl &&
+          mergedImages.length > 0 &&
+          detection.platform?.id !== 'youtube'
+            ? 'Photo'
+            : undefined,
+        resolveTimeMs: Date.now() - startMs,
+        resolvedVia: detection.isMetaPlatform ? 'meta-fast-engine' : 'oembed-live',
+      });
+
+      RESOLVE_CACHE.set(rawInput, {timestamp: Date.now(), detection, video});
+      return {detection, video};
+    }
+  }
+
+  const finalVideo: ResolvedVideo = {
+    ...fastResolved,
+    resolveTimeMs: Date.now() - startMs,
+  };
+  return {detection, video: finalVideo};
+}
+
 async function startServer() {
   setTimeout(() => {
     void ensureYtDlpBinary();
@@ -706,11 +1332,30 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  // Enable CORS so GitHub Pages (thichlendo.site) can also call this backend directly
+  // Enable full CORS for thichlendo.site, GitHub Pages, Render, and local development
   app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range');
+    const requestOrigin = req.headers.origin;
+    if (
+      requestOrigin &&
+      (requestOrigin.includes('thichlendo.site') ||
+        requestOrigin.includes('github.io') ||
+        requestOrigin.includes('onrender.com') ||
+        requestOrigin.includes('localhost'))
+    ) {
+      res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+      res.setHeader('Vary', 'Origin');
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Origin, X-Requested-With, Content-Type, Accept, Range, Authorization',
+    );
+    res.setHeader(
+      'Access-Control-Expose-Headers',
+      'Content-Disposition, Content-Length, Content-Range, Accept-Ranges',
+    );
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
@@ -721,182 +1366,46 @@ async function startServer() {
   app.use(express.json({limit: '10mb'}));
 
   app.get('/api/health', (_req, res) => {
-    res.json({status: 'ok'});
+    res.json({status: 'ok', backend: 'OmniDown Render Node Engine'});
   });
 
-  // 1. Ultra-Fast Video & Photo Resolver Endpoint (Special Meta Engine + 14+ Networks)
+  // 1. Ultra-Fast Video & Photo Resolver Endpoint (Supports both POST and GET)
   app.post('/api/resolve', async (req, res) => {
-    const startMs = Date.now();
-    const rawInput = typeof req.body?.input === 'string' ? req.body.input.trim() : '';
+    const rawInput =
+      typeof req.body?.input === 'string'
+        ? req.body.input.trim()
+        : typeof req.body?.url === 'string'
+          ? req.body.url.trim()
+          : '';
     if (!rawInput) {
       res.status(400).json({error: 'Vui lòng dán đường dẫn (URL) video hoặc ảnh mạng xã hội.'});
       return;
     }
+    try {
+      const payload = await handleResolveRequest(rawInput);
+      res.json(payload);
+    } catch {
+      res.status(500).json({error: 'Không thể phân tích đường dẫn phương tiện.'});
+    }
+  });
 
-    // Check fast LRU cache first
-    const cached = RESOLVE_CACHE.get(rawInput);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-      res.json({
-        detection: cached.detection,
-        video: {
-          ...cached.video,
-          resolveTimeMs: Math.max(1, Date.now() - startMs),
-        },
-      });
+  app.get('/api/resolve', async (req, res) => {
+    const rawInput =
+      typeof req.query.url === 'string'
+        ? req.query.url.trim()
+        : typeof req.query.input === 'string'
+          ? req.query.input.trim()
+          : '';
+    if (!rawInput) {
+      res.status(400).json({error: 'Vui lòng cung cấp tham số url hoặc input.'});
       return;
     }
-
-    // Step 1: Follow shortlink / share link redirects if needed (e.g. facebook.com/share/r/..., fb.watch/..., vt.tiktok.com/...)
-    let effectiveUrl = rawInput;
-    const initialDetection = detectSocialPlatform(rawInput);
-    if (initialDetection.isUrl) {
-      const redirectedUrl = await resolveRedirectFast(initialDetection.normalizedUrl || rawInput);
-      if (redirectedUrl && redirectedUrl !== rawInput) {
-        effectiveUrl = redirectedUrl;
-      }
+    try {
+      const payload = await handleResolveRequest(rawInput);
+      res.json(payload);
+    } catch {
+      res.status(500).json({error: 'Không thể phân tích đường dẫn phương tiện.'});
     }
-
-    const detection = detectSocialPlatform(effectiveUrl);
-
-    // Step 2: If it's a Meta platform (Facebook, Instagram, Threads), run our dedicated Meta Fast Engine and return immediately (<800ms)!
-    if (detection.isMetaPlatform) {
-      const metaResult = await extractMetaFast(detection.normalizedUrl || effectiveUrl, detection);
-      const video = resolveVideoFromDetection(effectiveUrl, detection, {
-        title: metaResult?.title,
-        author_name: metaResult?.authorName,
-        author_handle: metaResult?.authorHandle,
-        thumbnailUrl: metaResult?.thumbnailUrl,
-        videoStreamUrl: metaResult?.sdStreamUrl || metaResult?.hdStreamUrl,
-        hdStreamUrl: metaResult?.hdStreamUrl || metaResult?.sdStreamUrl,
-        images: metaResult?.images || [],
-        contentTypeOverride: metaResult?.isPhotoOnly ? 'Photo' : undefined,
-        resolveTimeMs: Date.now() - startMs,
-        resolvedVia: 'meta-fast-engine',
-      });
-
-      RESOLVE_CACHE.set(rawInput, {timestamp: Date.now(), detection, video});
-      res.json({detection, video});
-      return;
-    }
-
-    // Step 3: Fast API extractors (TikWM for TikTok/Douyin video & photo slideshows, FxTwitter for X, Dailymotion, Noembed)
-    const fastResolved = await extractRealVideoClientSide(effectiveUrl);
-    if (
-      fastResolved.videoStreamUrl ||
-      (fastResolved.contentType === 'Photo' && fastResolved.images.length > 0)
-    ) {
-      const video: ResolvedVideo = {
-        ...fastResolved,
-        resolveTimeMs: Date.now() - startMs,
-      };
-      RESOLVE_CACHE.set(rawInput, {timestamp: Date.now(), detection, video});
-      res.json({detection, video});
-      return;
-    }
-
-    // Step 4: Race Universal OpenGraph image/video scraper + yt-dlp for remaining URLs
-    if (detection.isUrl) {
-      const [ogResult, ytdlpInfo] = await Promise.all([
-        extractUniversalOpenGraphFast(detection.normalizedUrl || effectiveUrl, detection),
-        extractViaYtDlp(detection.normalizedUrl || effectiveUrl, 6000),
-      ]);
-
-      if (ytdlpInfo) {
-        const formats = (ytdlpInfo.formats || []).filter(
-          (f) => f.url && !f.url.includes('.m3u8') && f.ext === 'mp4',
-        );
-        const muxedFormats = formats
-          .filter((f) => f.vcodec && f.vcodec !== 'none' && f.acodec && f.acodec !== 'none')
-          .sort((a, b) => (b.height || 0) - (a.height || 0));
-        const videoFormats = formats
-          .filter((f) => f.vcodec && f.vcodec !== 'none')
-          .sort((a, b) => (b.height || 0) - (a.height || 0));
-        const audioFormats = (ytdlpInfo.formats || [])
-          .filter(
-            (f) => f.url && f.acodec && f.acodec !== 'none' && (!f.vcodec || f.vcodec === 'none'),
-          )
-          .sort((a, b) => (b.tbr || 0) - (a.tbr || 0));
-
-        const bestStream = muxedFormats[0]?.url || videoFormats[0]?.url || ytdlpInfo.url;
-        const sdStream = muxedFormats[muxedFormats.length - 1]?.url || bestStream;
-        const bestAudio = audioFormats[0]?.url || bestStream;
-
-        const mappedQualities: QualityOption[] = STANDARD_QUALITIES.slice(2).map((q) => {
-          const targetHeight = Number.parseInt(q.id, 10) || 720;
-          const matched =
-            muxedFormats.find((f) => f.height && Math.abs(f.height - targetHeight) <= 120) ||
-            videoFormats.find((f) => f.height && Math.abs(f.height - targetHeight) <= 120) ||
-            muxedFormats[0] ||
-            videoFormats[0];
-          return {
-            ...q,
-            directStreamUrl: matched?.url || bestStream,
-            realSizeBytes: matched?.filesize || matched?.filesize_approx,
-          };
-        });
-
-        const images: ExtractedImageItem[] = [...(ogResult?.images || []), ...fastResolved.images];
-        if (ytdlpInfo.thumbnail && !images.some((i) => i.url === ytdlpInfo.thumbnail)) {
-          images.unshift({
-            id: `${detection.videoId || 'media'}-ytdlp-thumb`,
-            url: ytdlpInfo.thumbnail,
-            label: `Ảnh gốc / Ảnh bìa độ phân giải cao (${detection.platform?.name || 'Media'})`,
-            format: 'JPG',
-          });
-        }
-
-        const video = resolveVideoFromDetection(effectiveUrl, detection, {
-          title: ytdlpInfo.title || ogResult?.title || fastResolved.title,
-          author_name: ytdlpInfo.uploader || fastResolved.authorName,
-          author_handle: ytdlpInfo.uploader_id
-            ? `@${ytdlpInfo.uploader_id.replace(/^@/, '')}`
-            : fastResolved.authorHandle,
-          durationSec: Math.round(ytdlpInfo.duration || fastResolved.durationSec || 30),
-          viewCount: ytdlpInfo.view_count || fastResolved.viewCount,
-          likeCount: ytdlpInfo.like_count || fastResolved.likeCount,
-          thumbnailUrl: ytdlpInfo.thumbnail || ogResult?.thumbnailUrl || fastResolved.thumbnailUrl,
-          videoStreamUrl: sdStream || bestStream || ogResult?.videoStreamUrl,
-          hdStreamUrl: bestStream || ogResult?.videoStreamUrl,
-          audioStreamUrl: bestAudio,
-          images,
-          qualities: mappedQualities,
-          resolveTimeMs: Date.now() - startMs,
-          resolvedVia: 'yt-dlp-live',
-        });
-
-        RESOLVE_CACHE.set(rawInput, {timestamp: Date.now(), detection, video});
-        res.json({detection, video});
-        return;
-      }
-
-      if (ogResult && (ogResult.images.length > 0 || ogResult.videoStreamUrl || ogResult.title)) {
-        const mergedImages =
-          ogResult.images.length > 0 ? ogResult.images : fastResolved.images;
-        const video = resolveVideoFromDetection(effectiveUrl, detection, {
-          title: ogResult.title || fastResolved.title,
-          author_name: fastResolved.authorName,
-          author_handle: fastResolved.authorHandle,
-          thumbnailUrl: ogResult.thumbnailUrl || fastResolved.thumbnailUrl,
-          videoStreamUrl: ogResult.videoStreamUrl || fastResolved.videoStreamUrl,
-          hdStreamUrl: ogResult.videoStreamUrl || fastResolved.hdStreamUrl,
-          images: mergedImages,
-          contentTypeOverride:
-            !ogResult.videoStreamUrl && mergedImages.length > 0 ? 'Photo' : undefined,
-          resolveTimeMs: Date.now() - startMs,
-          resolvedVia: detection.isMetaPlatform ? 'meta-fast-engine' : 'oembed-live',
-        });
-
-        RESOLVE_CACHE.set(rawInput, {timestamp: Date.now(), detection, video});
-        res.json({detection, video});
-        return;
-      }
-    }
-
-    const finalVideo: ResolvedVideo = {
-      ...fastResolved,
-      resolveTimeMs: Date.now() - startMs,
-    };
-    res.json({detection, video: finalVideo});
   });
 
   // 2. Live Video Search Endpoint
@@ -904,7 +1413,7 @@ async function startServer() {
     const q = typeof req.query.q === 'string' ? req.query.q : '';
     const platform =
       typeof req.query.platform === 'string' ? (req.query.platform as PlatformId | 'all') : 'all';
-    const results = await searchLiveVideos(q, platform);
+    const results = await searchVideosServerSide(q, platform);
     res.json({
       query: q,
       platform,
@@ -1012,7 +1521,6 @@ async function startServer() {
       const buf = Buffer.from(await upstream.arrayBuffer());
       fs.writeFileSync(rawImgFile, buf);
 
-      // Convert WebP / HEIC / AVIF to clean high-quality JPG if filename ends with .jpg
       let finalFile = rawImgFile;
       if (cleanFilename.toLowerCase().endsWith('.jpg')) {
         try {
@@ -1069,7 +1577,6 @@ async function startServer() {
 
     const filename = buildDownloadFilename({platformId, videoId, title}, quality, audioMode);
 
-    // If user selected 'image_only' mode and we have a direct imageUrl (or streamUrl is an image)
     if (audioMode === 'image_only') {
       const targetImg = imageUrl || streamUrl;
       if (targetImg && /^https?:\/\//i.test(targetImg)) {
@@ -1101,7 +1608,7 @@ async function startServer() {
     };
 
     try {
-      // If streamUrl wasn't passed, resolve it on the fly (including Meta fast engine)
+      // If streamUrl wasn't passed, resolve it on the fly on the server
       if (!streamUrl && originalUrl) {
         const det = detectSocialPlatform(originalUrl);
         if (det.isMetaPlatform) {
@@ -1114,7 +1621,7 @@ async function startServer() {
           }
         }
         if (!streamUrl) {
-          const resolved = await extractRealVideoClientSide(originalUrl);
+          const resolved = await extractPlatformStreamsServerSide(originalUrl);
           streamUrl =
             quality === '1080p'
               ? resolved.hdStreamUrl || resolved.videoStreamUrl || ''
@@ -1149,7 +1656,7 @@ async function startServer() {
         }
       }
 
-      // Step B: If direct fetch didn't get it and originalUrl is provided, try yt-dlp download
+      // Step B: If direct fetch didn't get it and originalUrl is provided, try yt-dlp download with --js-runtimes node
       if (!downloadedRaw && originalUrl && /^https?:\/\//i.test(originalUrl)) {
         const ytdlpReady = await ensureYtDlpBinary();
         if (ytdlpReady) {
@@ -1165,18 +1672,21 @@ async function startServer() {
             await execFileAsync(
               YT_DLP_PATH,
               [
+                '--js-runtimes',
+                'node',
                 '-f',
                 formatSelector,
                 '--no-playlist',
                 '--no-warnings',
                 '--no-check-certificates',
+                '--geo-bypass',
                 '--merge-output-format',
                 'mp4',
                 '-o',
                 rawTmpFile,
                 originalUrl,
               ],
-              {timeout: 22000},
+              {timeout: 24000},
             );
             if (fs.existsSync(rawTmpFile) && fs.statSync(rawTmpFile).size > 1024) {
               downloadedRaw = true;
@@ -1187,7 +1697,7 @@ async function startServer() {
         }
       }
 
-      // Step C: Process with FFmpeg according to audioMode (with_audio, muted_video -an, audio_only MP3, or image_only JPG frame)
+      // Step C: Process with FFmpeg according to audioMode
       if (downloadedRaw && fs.existsSync(rawTmpFile)) {
         if (audioMode === 'image_only') {
           await execFileAsync(
@@ -1196,7 +1706,6 @@ async function startServer() {
             {timeout: 12000},
           );
         } else if (audioMode === 'muted_video') {
-          // Strip audio track completely (-an) while preserving original video stream
           await execFileAsync(
             'ffmpeg',
             [
@@ -1229,7 +1738,6 @@ async function startServer() {
             {timeout: 15000},
           );
         } else {
-          // Full video + audio: fast remux or direct copy
           try {
             await execFileAsync(
               'ffmpeg',

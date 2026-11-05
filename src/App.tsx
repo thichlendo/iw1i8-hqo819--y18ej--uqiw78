@@ -18,7 +18,9 @@ import {
   PLATFORM_LIST,
   CLOUD_BACKEND_ORIGIN,
   detectSocialPlatform,
-  extractRealVideoClientSide,
+  resolveVideoViaBackend,
+  buildBackendDownloadUrl,
+  buildBackendImageDownloadUrl,
   calculateStreamSizeBytes,
   formatBytes,
   formatDuration,
@@ -36,8 +38,14 @@ import {DownloadHistoryTable, type DownloadHistoryItem} from './components/Downl
 
 const HISTORY_STORAGE_KEY = 'omnidown_real_history_v2';
 
-function getApiBaseUrl(): string {
-  return CLOUD_BACKEND_ORIGIN;
+function triggerDirectBackendDownload(downloadUrl: string, filename: string): void {
+  const link = document.createElement('a');
+  link.href = downloadUrl;
+  link.download = filename;
+  link.rel = 'noopener noreferrer';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 }
 
 export function App() {
@@ -47,10 +55,10 @@ export function App() {
   const [isResolving, setIsResolving] = useState<boolean>(false);
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
 
-  // Instant <0.2ms client-side detection as user types or pastes
+  // Instant <0.2ms client-side URL format detection as user types or pastes
   const liveDetection = useMemo(() => detectSocialPlatform(urlInput), [urlInput]);
 
-  // Resolved video/photo is null until the user actually analyzes a real link
+  // Resolved video/photo is null until the user analyzes a real link via Render backend
   const [resolvedVideo, setResolvedVideo] = useState<ResolvedVideo | null>(null);
   const [activeImageIndex, setActiveImageIndex] = useState<number>(0);
 
@@ -114,7 +122,6 @@ export function App() {
   const applyResolvedMedia = (video: ResolvedVideo) => {
     setResolvedVideo(video);
     setActiveImageIndex(0);
-    // Automatically switch to image_only if this is a photo-only post (e.g. FB Photo, IG Carousel, TikTok Photo Mode)
     if (video.contentType === 'Photo' && !video.videoStreamUrl && !video.hdStreamUrl) {
       setAudioMode('image_only');
     } else if (audioMode === 'image_only' && (video.videoStreamUrl || video.hdStreamUrl)) {
@@ -122,6 +129,10 @@ export function App() {
     }
   };
 
+  /**
+   * Strictly sends POST / GET request to Render backend (`https://iw1i8-hqo819--y18ej--uqiw78.onrender.com/api/resolve`)
+   * without falling back to client-side scraping.
+   */
   const handleAnalyzeUrl = async (targetInput?: string) => {
     const raw = (targetInput !== undefined ? targetInput : urlInput).trim();
     if (!raw) {
@@ -133,39 +144,24 @@ export function App() {
     setIsResolving(true);
     setDownloadFeedback(null);
 
-    const apiBase = getApiBaseUrl();
-
-    // 1. Try ultra-fast server-side resolver (Meta Fast Engine + TikWM + FxTwitter + yt-dlp + OpenGraph)
     try {
-      const response = await fetch(`${apiBase}/api/resolve`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({input: raw}),
-      });
-
-      if (response.ok) {
-        const data = (await response.json()) as {video: ResolvedVideo};
-        if (data?.video) {
-          applyResolvedMedia(data.video);
-          setIsResolving(false);
-          return;
-        }
-      }
-    } catch {
-      // Fall through to direct browser CORS extraction
-    }
-
-    // 2. Direct browser CORS extraction (TikWM, FxTwitter, Dailymotion, Noembed)
-    try {
-      const clientVideo = await extractRealVideoClientSide(raw);
-      applyResolvedMedia(clientVideo);
-    } catch {
-      setValidationError('Không thể phân tích đường dẫn này. Vui lòng kiểm tra lại URL.');
+      const serverVideo = await resolveVideoViaBackend(raw);
+      applyResolvedMedia(serverVideo);
+    } catch (err) {
+      setValidationError(
+        err instanceof Error
+          ? err.message
+          : `Không thể kết nối tới máy chủ Render (${CLOUD_BACKEND_ORIGIN}). Vui lòng kiểm tra trạng thái dịch vụ Render.`,
+      );
     } finally {
       setIsResolving(false);
     }
   };
 
+  /**
+   * Triggers image download directly through Render backend `/api/download-image` endpoint
+   * (never fetches raw CDN blobs from the browser).
+   */
   const downloadSpecificImageFile = async (
     imageUrl: string,
     index: number,
@@ -181,61 +177,16 @@ export function App() {
       targetVideo.images.length > 1 ? index : undefined,
     );
 
-    const apiBase = getApiBaseUrl();
-    const proxyDownloadUrl = `${apiBase}/api/download-image?url=${encodeURIComponent(
-      imageUrl,
-    )}&filename=${encodeURIComponent(filename)}`;
-
-    // 1. Try backend image converter & downloader (bypasses Meta fbcdn/cdninstagram CORS)
-    try {
-      const res = await fetch(proxyDownloadUrl);
-      if (res.ok) {
-        const blob = await res.blob();
-        if (blob.size > 512) {
-          const blobUrl = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = blobUrl;
-          link.download = filename;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-          return blob.size;
-        }
-      }
-    } catch {
-      // Fall through to direct client fetch
-    }
-
-    // 2. Direct client-side image fetch
-    try {
-      const cdnRes = await fetch(imageUrl);
-      if (cdnRes.ok) {
-        const blob = await cdnRes.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = blobUrl;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-        return blob.size;
-      }
-    } catch {
-      const link = document.createElement('a');
-      link.href = imageUrl;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    }
-
+    const backendImageDownloadUrl = buildBackendImageDownloadUrl(imageUrl, filename);
+    triggerDirectBackendDownload(backendImageDownloadUrl, filename);
     return 480 * 1024;
   };
 
+  /**
+   * Triggers Video (with_audio / muted_video -an), Audio (MP3), or Image (JPG) download
+   * directly through the Render backend endpoint (`https://iw1i8-hqo819--y18ej--uqiw78.onrender.com/api/download`).
+   * Never performs browser `fetch()` blob downloads from third-party CDNs to avoid 403 Forbidden errors.
+   */
   const downloadRealMediaFile = async (params: {
     platformId: PlatformId;
     videoId: string;
@@ -259,79 +210,20 @@ export function App() {
       params.imageIndex,
     );
 
-    const apiBase = getApiBaseUrl();
-    const query = new URLSearchParams({
+    const backendDownloadUrl = buildBackendDownloadUrl({
       platformId: params.platformId,
       videoId: params.videoId,
       title: params.title,
       quality: params.quality,
       audioMode: params.audioMode,
-      url: params.originalUrl,
-      streamUrl: params.streamUrl || '',
-      audioUrl: params.audioUrl || '',
-      imageUrl: params.imageUrl || '',
+      originalUrl: params.originalUrl,
+      streamUrl: params.streamUrl,
+      audioUrl: params.audioUrl,
+      imageUrl: params.imageUrl,
     });
 
-    // 1. Try downloading via backend FFmpeg / yt-dlp pipeline (supports real -an muted video, MP3, & JPG extraction)
-    try {
-      const res = await fetch(`${apiBase}/api/download?${query.toString()}`);
-      if (res.ok) {
-        const blob = await res.blob();
-        if (blob.size > 512) {
-          const blobUrl = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = blobUrl;
-          link.download = filename;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-          return blob.size;
-        }
-      }
-    } catch {
-      // Fall through to direct CDN binary download if backend is unreachable
-    }
-
-    // 2. Direct client-side CDN binary fetch
-    const directUrl =
-      params.audioMode === 'audio_only'
-        ? params.audioUrl || params.streamUrl
-        : params.audioMode === 'image_only'
-          ? params.imageUrl || params.streamUrl
-          : params.streamUrl;
-
-    if (directUrl && /^https?:\/\//i.test(directUrl)) {
-      try {
-        const cdnRes = await fetch(directUrl);
-        if (cdnRes.ok) {
-          const blob = await cdnRes.blob();
-          if (blob.size > 512) {
-            const blobUrl = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = blobUrl;
-            link.download = filename;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-            return blob.size;
-          }
-        }
-      } catch {
-        const link = document.createElement('a');
-        link.href = directUrl;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        return currentSizeBytes;
-      }
-    }
-
-    throw new Error('Không thể tải luồng phương tiện trực tiếp từ đường dẫn này.');
+    triggerDirectBackendDownload(backendDownloadUrl, filename);
+    return currentSizeBytes || 4 * 1024 * 1024;
   };
 
   const handleExecuteDownload = async () => {
@@ -398,7 +290,7 @@ export function App() {
               : 'Chỉ âm thanh (MP3)';
 
       setDownloadFeedback(
-        `Đã tải thành công "${currentFilename}" · ${
+        `Đang tải xuống "${currentFilename}" qua máy chủ Render (${CLOUD_BACKEND_ORIGIN}) · ${
           audioMode === 'audio_only'
             ? 'MP3'
             : audioMode === 'image_only'
@@ -443,7 +335,9 @@ export function App() {
       imageUrl: imgUrl,
     };
     setDownloadHistory((prev) => [newItem, ...prev]);
-    setDownloadFeedback(`Đã tải thành công ảnh gốc "${fname}" (${formatBytes(bytes || 491520)})`);
+    setDownloadFeedback(
+      `Đang tải ảnh gốc "${fname}" qua máy chủ Render (${formatBytes(bytes || 491520)})`,
+    );
   };
 
   const handleDownloadAllImages = async () => {
@@ -540,7 +434,7 @@ export function App() {
         <section id="workspace" aria-labelledby="hero-heading">
           <div className="max-w-3xl">
             <p className="text-xs font-medium text-blue-400">
-              Cơ chế Check Siêu Nhanh Meta (Facebook · Instagram · Threads) · Tải Video & Ảnh Gốc 14+ MXH
+              Xử lý 100% qua Backend Render ({CLOUD_BACKEND_ORIGIN}) · Meta · YouTube · TikTok · 14+ MXH
             </p>
             <h1
               id="hero-heading"
@@ -550,7 +444,7 @@ export function App() {
               Tải Video và Ảnh gốc từ Facebook, Instagram, Threads, TikTok, YouTube & mọi Mạng Xã Hội
             </h1>
             <p className="mt-2.5 text-sm sm:text-base text-slate-400 leading-relaxed">
-              Tự động giải mã nhanh các link chia sẻ rút gọn của hệ sinh thái Meta (`facebook.com/share/r/...`, `fb.watch`, `instagram.com/p/...`, `threads.com`) cùng TikTok, Douyin, YouTube, X (Twitter). Hỗ trợ chọn tải Video Có Tiếng, Video Không Tiếng (`-an`), Nhạc MP3 hoặc Tải Ảnh Gốc / Album Ảnh độ phân giải cao.
+              Mọi tác vụ phân tích đường dẫn, bóc tách luồng video/ảnh và xử lý FFmpeg (Video Có Tiếng, Video Không Tiếng `-an`, Nhạc MP3, Ảnh Gốc JPG) đều được gửi trực tiếp về máy chủ Render của bạn để tránh lỗi chặn CORS/403 ở trình duyệt.
             </p>
           </div>
 
@@ -601,7 +495,7 @@ export function App() {
                 {isResolving ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Đang check siêu tốc...</span>
+                    <span>Đang phân tích trên Render...</span>
                   </>
                 ) : (
                   <>
@@ -672,7 +566,7 @@ export function App() {
                 </div>
               ) : (
                 <div className="text-slate-400">
-                  Trạng thái: Đang chờ bạn dán đường dẫn (URL) video hoặc ảnh từ Facebook, Instagram, Threads, TikTok, YouTube... để tự động check.
+                  Trạng thái: Đang chờ bạn dán đường dẫn (URL) video hoặc ảnh từ Facebook, Instagram, Threads, TikTok, YouTube... để gửi lên Render phân tích.
                 </div>
               )}
             </div>
@@ -717,13 +611,13 @@ export function App() {
 
                     <span className="font-mono text-emerald-400">
                       {resolvedVideo.resolveTimeMs
-                        ? `Check xong trong ${resolvedVideo.resolveTimeMs}ms · `
+                        ? `Render xử lý trong ${resolvedVideo.resolveTimeMs}ms · `
                         : ''}
                       {resolvedVideo.videoStreamUrl
                         ? 'Luồng MP4 + Ảnh gốc sẵn sàng'
                         : resolvedVideo.images.length > 0
                           ? `Đã bóc tách ${resolvedVideo.images.length} ảnh gốc HD`
-                          : 'Đã nhận diện nguồn'}
+                          : 'Đã kết nối luồng tải Render'}
                     </span>
                   </div>
 
@@ -872,7 +766,7 @@ export function App() {
                       01. Chọn Chế độ Tải xuống (Video / Tắt Tiếng / MP3 / Tải Ảnh)
                     </h3>
                     <p className="mt-1 text-xs text-slate-400">
-                      Tùy chọn tải Video MP4 có tiếng, Video tắt tiếng hoàn toàn (`-an`), tách nhạc MP3 hoặc tải Ảnh gốc độ phân giải cao (JPG).
+                      Tùy chọn tải Video MP4 có tiếng, Video tắt tiếng hoàn toàn (`-an`), tách nhạc MP3 hoặc tải Ảnh gốc độ phân giải cao (JPG) qua máy chủ Render.
                     </p>
 
                     <div
@@ -1056,7 +950,7 @@ export function App() {
                     {isDownloading ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>Đang xử lý & tải tệp thật...</span>
+                        <span>Đang kết nối luồng tải Render...</span>
                       </>
                     ) : (
                       <>
@@ -1144,7 +1038,7 @@ export function App() {
               04. Danh mục 14+ Mạng Xã Hội Hỗ Trợ Nhận Diện Siêu Nhanh & Tải Video / Ảnh
             </h2>
             <p className="mt-1 text-sm text-slate-400">
-              Tích hợp cơ chế bóc tách chuyên biệt cho hệ sinh thái Meta (Facebook, Instagram, Threads) và 11 nền tảng video/ảnh phổ biến.
+              Tích hợp cơ chế bóc tách chuyên biệt qua máy chủ Render ({CLOUD_BACKEND_ORIGIN}) cho hệ sinh thái Meta (Facebook, Instagram, Threads) và 11 nền tảng phổ biến.
             </p>
           </div>
 
@@ -1190,7 +1084,7 @@ export function App() {
       {/* Quiet Footer */}
       <footer className="mt-16 border-t border-slate-800/80 bg-[#090D16] py-6 px-6 text-xs text-slate-500">
         <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-3 sm:flex-row">
-          <p>OmniDown VN — Trình check siêu tốc Meta (Facebook, Instagram, Threads) & tải Video/Ảnh thực tế đa mạng xã hội.</p>
+          <p>OmniDown VN — Trình phân tích & tải Video/Ảnh thực tế qua Backend Render ({CLOUD_BACKEND_ORIGIN}).</p>
           <div className="flex items-center gap-4">
             <a href="#workspace" className="hover:text-slate-300 transition-colors">Trình tải Video & Ảnh</a>
             <a href="#exact-finder" className="hover:text-slate-300 transition-colors">Tìm kiếm chính xác</a>
